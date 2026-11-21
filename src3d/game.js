@@ -11,7 +11,8 @@ import {
 } from './visuals.js';
 import { sfx, toggleMute, setVolumes } from './audio.js';
 import * as ui from './ui.js';
-import { onSettings, recordWin } from './store.js';
+import { onSettings, recordWin, unlockLevel } from './store.js';
+import { solve } from './solver.js';
 
 const params = new URLSearchParams(location.search);
 const SHOT = params.has('shot');
@@ -133,6 +134,9 @@ function loadLevel(i) {
   queued = null;
   busyUntil = 0;
   hideOverlay();
+  cancelHint();
+  hintsUsed = 0; stuckCount = 0; movesThisLevel = 0;
+  showTip('');
   fitCamera();
   snapToState();
   $('chamber').textContent = `DECK ${i + 1} / ${LEVELS.length}`;
@@ -308,6 +312,7 @@ function worldDir(screen) {
 function rotate(delta) {
   cam.rot += delta;
   tween(cam, { angle: cam.rot }, { dur: 420, e: 'inOut' });
+  if (hintDir) setHintMsg(hintText(hintDir), 'good'); // screen arrow changes with the camera
 }
 
 // ---------- turns ----------
@@ -328,6 +333,8 @@ function tryMoveWorld(dir) {
   }
   history.push(state);
   state = next;
+  movesThisLevel++;
+  cancelHint();
   animate(events);
 }
 
@@ -463,6 +470,7 @@ function animate(events) {
 
 function undo() {
   if (!history.length || locked) return;
+  cancelHint();
   state = history.pop();
   hideOverlay();
   snapToState();
@@ -471,6 +479,8 @@ function undo() {
 
 function restart() {
   if (locked || state === initial) return;
+  cancelHint();
+  noteStuck();
   history.push(state); // restart is undoable
   state = initial;
   hideOverlay();
@@ -503,6 +513,7 @@ function hideOverlay() { $('overlay').classList.remove('show'); }
 
 function showLose(ev) {
   if (state.status !== 'lost') return;
+  noteStuck();
   const name = NAMES[ev.who];
   const title = ev.reason === 'void' ? `${name} FELL INTO THE VOID`
     : ev.reason === 'evaporated' ? `${name} EVAPORATED` : 'THE CRUCIBLE WENT COLD';
@@ -587,6 +598,7 @@ addEventListener('keydown', (ev) => {
     case 'KeyZ': case 'Backspace': undo(); break;
     case 'KeyR': restart(); break;
     case 'KeyM': toggleMute(); break;
+    case 'KeyH': requestHint(); break;
     case 'Enter': case 'Space': nextLevel(); break;
     case 'BracketRight': gotoLevel(levelIndex + 1); break;
     case 'BracketLeft': gotoLevel(levelIndex - 1); break;
@@ -649,6 +661,7 @@ function touchAct(act) {
     case 'rotl': rotate(-1); break;
     case 'rotr': rotate(1); break;
     case 'pause': ui.openPause(); break;
+    case 'hint': requestHint(); break;
   }
 }
 for (const btn of document.querySelectorAll('#touch [data-act]')) {
@@ -668,6 +681,187 @@ for (const btn of document.querySelectorAll('#touch [data-act]')) {
   btn.addEventListener('pointerleave', up);
 }
 $('intro').addEventListener('click', () => $('intro').classList.toggle('expanded'));
+$('hint-btn').addEventListener('click', (e) => { e.currentTarget.blur(); requestHint(); });
+
+// ---------- helpers: hints, stuck tip, skip, direction glyphs ----------
+
+let hintWorker = null, hintId = 0, hintDir = null;
+let hintsUsed = 0, stuckCount = 0, movesThisLevel = 0;
+const SCREEN_DIRS = ['up', 'down', 'left', 'right'];
+const ARROW = { up: '↑', down: '↓', left: '←', right: '→' };
+const KEYCAP = { up: 'W', down: 'S', left: 'A', right: 'D' };
+const screenFor = (wd) => SCREEN_DIRS.find((sd) => worldDir(sd) === wd) ?? 'up';
+
+function setHintMsg(text, kind = '') {
+  const el = $('hint-msg');
+  el.textContent = text;
+  el.className = text ? `show ${kind}` : '';
+}
+function hintText(wd) {
+  const sd = screenFor(wd);
+  return isTouch() ? `HINT · SWIPE ${ARROW[sd]}` : `HINT · PRESS ${ARROW[sd]}  OR  ${KEYCAP[sd]}`;
+}
+function cancelHint() {
+  hintId++;
+  if (hintWorker) { hintWorker.terminate(); hintWorker = null; }
+  hintDir = null;
+  hintArrows.visible = false;
+  setHintMsg('');
+}
+function noWayMsg() {
+  setHintMsg(isTouch() ? 'NO WAY FORWARD FROM HERE · TAP UNDO OR RESTART' : 'NO WAY FORWARD FROM HERE · UNDO (Z) OR RESTART (R)', 'bad');
+}
+function requestHint() {
+  if (mode !== 'game' || ui.isOpen() || locked) return;
+  cancelHint();
+  if (state.status === 'lost') { noWayMsg(); return; }
+  if (state.status !== 'play') return;
+  hintsUsed++;
+  showTip('');
+  setHintMsg('THINKING…', 'thinking');
+  const id = hintId;
+  const deliver = (solved, next) => {
+    if (id !== hintId) return; // a move/undo happened meanwhile
+    if (!solved) { noWayMsg(); return; }
+    hintDir = next;
+    hintArrows.visible = true;
+    setHintMsg(hintText(hintDir), 'good');
+    sfx('tether', 0.3);
+  };
+  // Main-thread fallback (smaller search) if module workers are unavailable; ?hintsync forces it (dev/headless).
+  const syncSolve = () => setTimeout(() => {
+    const r = solve(level, state, { maxNodes: 120000 });
+    deliver(r.solved, r.solved ? r.path[0] : null);
+  }, 30);
+  if (params.has('hintsync')) { syncSolve(); return; }
+  try {
+    hintWorker = new Worker(new URL('./hintworker.js', import.meta.url), { type: 'module' });
+  } catch { syncSolve(); return; }
+  // Watchdog: if the worker never answers (blocked module workers, silent failure),
+  // fall back to the main-thread solve instead of sitting on "THINKING…" forever.
+  const worker = hintWorker;
+  const watchdog = setTimeout(() => {
+    if (hintWorker !== worker || id !== hintId) return;
+    hintWorker.terminate(); hintWorker = null;
+    syncSolve();
+  }, 8000);
+  hintWorker.onmessage = (e) => {
+    if (e.data.id !== id) return;
+    clearTimeout(watchdog);
+    hintWorker.terminate(); hintWorker = null;
+    deliver(e.data.solved, e.data.next);
+  };
+  hintWorker.onerror = () => {
+    clearTimeout(watchdog);
+    if (hintWorker) { hintWorker.terminate(); hintWorker = null; }
+    syncSolve();
+  };
+  hintWorker.postMessage({ id, level, state, maxNodes: 300000 });
+}
+
+function showTip(text) {
+  const el = $('tip');
+  el.textContent = text;
+  el.classList.toggle('show', !!text);
+}
+function noteStuck() {
+  stuckCount++;
+  if (stuckCount >= 3 && !hintDir) showTip(isTouch() ? 'Stuck? Tap 💡 for a hint' : 'Stuck? Press H for a hint');
+}
+
+function skipDeck() {
+  if (levelIndex >= LEVELS.length - 1) return;
+  unlockLevel(levelIndex + 1);
+  startLevel(levelIndex + 1);
+}
+
+// Glowing floor arrows showing the hinted move, one in front of each element.
+function makeArrowMesh() {
+  const sh = new THREE.Shape();
+  sh.moveTo(-0.17, -0.07); sh.lineTo(0.04, -0.07); sh.lineTo(0.04, -0.16); sh.lineTo(0.24, 0);
+  sh.lineTo(0.04, 0.16); sh.lineTo(0.04, 0.07); sh.lineTo(-0.17, 0.07); sh.closePath();
+  const geo = new THREE.ShapeGeometry(sh);
+  geo.rotateX(-Math.PI / 2); // lie flat, still pointing +x
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color: 0xffd88a, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending,
+    depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  }));
+}
+const hintArrows = new THREE.Group();
+const hintArrowFor = { sol: makeArrowMesh(), cryo: makeArrowMesh() };
+hintArrowFor.sol.scale.setScalar(1.6); hintArrowFor.cryo.scale.setScalar(1.6);
+hintArrows.add(hintArrowFor.sol, hintArrowFor.cryo);
+hintArrows.visible = false;
+scene.add(hintArrows);
+function updateHintArrows(t) {
+  if (!hintArrows.visible || !hintDir) return;
+  const d = DIRS[hintDir];
+  const bob = 0.78 + 0.08 * Math.sin(t * 6);
+  for (const k of ELEMENTS) {
+    const a = hintArrowFor[k];
+    a.visible = !state[k].fallen;
+    a.position.set(disp[k].x + d.x * bob, disp[k].y + 0.03, disp[k].z + d.y * bob); // element origin = floor top
+    a.rotation.y = Math.atan2(-d.y, d.x);
+    a.material.opacity = 0.65 + 0.3 * Math.sin(t * 6);
+  }
+}
+
+// First two decks only: one set of direction keys around the pair, so players learn which
+// key moves which way under the angled camera. They fade after the first few moves.
+const glyphs = {};
+const glyphGroup = new THREE.Group();
+scene.add(glyphGroup);
+let glyphTouch = null;
+function glyphTexture(sd, touch) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.shadowColor = 'rgba(255,216,138,0.9)'; g.shadowBlur = 12;
+  g.fillStyle = '#ffe9c2';
+  if (touch) {
+    g.font = '700 76px Rajdhani, sans-serif';
+    g.fillText(ARROW[sd], 64, 64);
+  } else {
+    g.font = '700 64px Rajdhani, sans-serif';
+    g.fillText(KEYCAP[sd], 64, 50);
+    g.font = '700 38px Rajdhani, sans-serif';
+    g.fillText(ARROW[sd], 64, 100);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function buildGlyphs(touch) {
+  glyphTouch = touch;
+  for (const o of [...glyphGroup.children]) { o.material.map?.dispose(); o.material.dispose(); glyphGroup.remove(o); }
+  for (const sd of SCREEN_DIRS) {
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyphTexture(sd, touch), transparent: true, depthWrite: false, depthTest: false }));
+    sp.scale.setScalar(0.62);
+    sp.renderOrder = 5;
+    glyphs[sd] = sp;
+    glyphGroup.add(sp);
+  }
+}
+let glyphFade = 0;
+function updateGlyphs(dt) {
+  const want = mode === 'game' && levelIndex < 2 && state.status === 'play' && movesThisLevel < 4 && !locked ? 1 : 0;
+  glyphFade += (want - glyphFade) * Math.min(1, dt * 4);
+  glyphGroup.visible = glyphFade > 0.02;
+  if (!glyphGroup.visible) return;
+  if (glyphTouch !== isTouch()) buildGlyphs(isTouch());
+  const a = disp.sol, b = disp.cryo;
+  const cx = (a.x + b.x) / 2, cy = Math.min(a.y, b.y), cz = (a.z + b.z) / 2;
+  for (const sd of SCREEN_DIRS) {
+    const sp = glyphs[sd];
+    const d = DIRS[worldDir(sd)];
+    // Sit just outside the pair along that axis.
+    const half = d.x !== 0 ? Math.abs(a.x - b.x) / 2 : Math.abs(a.z - b.z) / 2;
+    const r = half + 1.05;
+    sp.position.set(cx + d.x * r, cy + 0.05, cz + d.y * r);
+    sp.material.opacity = 0.85 * glyphFade;
+  }
+}
 
 // ---------- modes (called by ui.js) ----------
 
@@ -746,6 +940,8 @@ function frame() {
   tmpB.copy(elements.cryo.group.position).y += 0.32;
   tether.update(tmpA, tmpB, showTether, t);
 
+  updateHintArrows(t);
+  updateGlyphs(dt);
   if (alloy.visible) alloy.rotation.y = t * 0.9;
   bursts.update(dt);
   composer.render();
@@ -755,9 +951,9 @@ function frame() {
 // ---------- boot ----------
 
 ui.initUI({
-  startLevel, showMenuBackground, setMode, restart,
+  startLevel, showMenuBackground, setMode, restart, skipDeck,
   resetRun: () => { runTurns = 0; },
-  levelInfo: () => ({ index: levelIndex, name: LEVELS[levelIndex].name }),
+  levelInfo: () => ({ index: levelIndex, name: LEVELS[levelIndex].name, last: levelIndex === LEVELS.length - 1 }),
 });
 loadLevel(levelIndex);
 // ?shot or ?level=N go straight to gameplay; ?screen=... opens a menu screen (dev); otherwise main menu.
@@ -766,7 +962,9 @@ else if (params.has('screen')) ui.openDevScreen(params.get('screen'));
 else ui.showMainMenu();
 cam.angle = cam.rot;
 requestAnimationFrame(frame);
-window.__game = { get state() { return state; }, tryMove, tryMoveWorld, undo, restart, rotate, loadLevel, startLevel };
+window.__game = { get state() { return state; }, tryMove, tryMoveWorld, undo, restart, rotate, loadLevel, startLevel, requestHint, skipDeck };
+// Dev: ?hint asks for a hint shortly after the level starts (for screenshots).
+if (params.has('hint') || params.has('hintsync')) setTimeout(requestHint, 900);
 
 // Dev: ?play=south,east,...  replays world-direction moves (e.g. a solver path), one every 450ms.
 if (params.has('play')) {

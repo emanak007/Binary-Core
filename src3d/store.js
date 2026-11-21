@@ -41,6 +41,11 @@ export function recordWin(levelIndex, turns) {
   if (prev == null || turns < prev) progress.best[levelIndex] = turns;
   write(KEY_PROGRESS, progress);
 }
+// Skip Deck: make level i (0-based) playable without beating the one before it.
+export function unlockLevel(i) {
+  progress.unlocked = Math.max(progress.unlocked, i + 1);
+  write(KEY_PROGRESS, progress);
+}
 export function markIntroSeen() { progress.seenIntro = true; write(KEY_PROGRESS, progress); }
 export function resetProgress() {
   Object.assign(progress, { unlocked: 1, best: {}, seenIntro: false });

@@ -135,6 +135,28 @@
       #tactions [data-act="undo"] { right: calc(12px + var(--sar)); bottom: calc(10px + var(--sab)); }
       #overlay-title { font-size: 30px; }
     }
+    /* ---------- hints / tips ---------- */
+    #hint-btn { pointer-events: auto; margin-top: 10px; display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+      font: 700 13px Rajdhani, sans-serif; letter-spacing: 2px; color: var(--gold); padding: 6px 12px; border-radius: 999px;
+      background: rgba(255,216,138,0.08); border: 1px solid rgba(255,216,138,0.35); transition: background 0.2s, border-color 0.2s; }
+    #hint-btn:hover { background: rgba(255,216,138,0.18); border-color: rgba(255,216,138,0.7); }
+    #hint-btn kbd { font: 700 11px Rajdhani, sans-serif; padding: 1px 6px; border-radius: 4px; border: 1px solid rgba(255,216,138,0.4); color: var(--dim); }
+    body.touch #hint-btn { display: none; }
+    #hint-msg, #tip { display: block; width: fit-content; margin: 0 auto 10px; opacity: 0; transform: translateY(6px);
+      transition: opacity 0.25s, transform 0.25s; font-weight: 700; letter-spacing: 2px; border-radius: 999px; }
+    #hint-msg.show, #tip.show { opacity: 1; transform: none; }
+    #hint-msg:empty, #tip:empty { padding: 0; margin: 0; }
+    #hint-msg { font-size: 16px; padding: 6px 16px; color: var(--gold); background: rgba(20,16,8,0.7);
+      border: 1px solid rgba(255,216,138,0.4); box-shadow: 0 0 24px rgba(255,190,90,0.18); }
+    #hint-msg.thinking { color: var(--dim); border-color: rgba(255,255,255,0.15); animation: blink 1s ease-in-out infinite; }
+    #hint-msg.bad { color: var(--danger); border-color: rgba(255,77,94,0.45); }
+    #tip { font-size: 14px; padding: 4px 14px; color: var(--text); background: rgba(16,18,25,0.7); border: 1px solid rgba(255,255,255,0.12); }
+    body.touch #hint-msg, body.touch #tip { margin: 0 0 8px; font-size: 13px; }
+    #tactions .thint { right: calc(16px + var(--sar)); bottom: calc(16px + var(--sab) + 148px); font-size: 22px;
+      background: rgba(255,216,138,0.14); border-color: rgba(255,216,138,0.45); }
+    @media (max-height: 460px) {
+      #tactions .thint { right: calc(12px + var(--sar) + 132px); bottom: calc(10px + var(--sab)); }
+    }
   </style>
   <link rel="stylesheet" href="src3d/ui.css">
   <script type="importmap">
@@ -150,6 +172,7 @@
   <div id="hud-left" class="hud">
     <div id="chamber">DECK 1 / 1</div>
     <div id="level-name"></div>
+    <button id="hint-btn" type="button" aria-label="Hint">💡 HINT <kbd>H</kbd></button>
   </div>
   <div id="hud-right" class="hud">
     <div id="heat-label" class="label">CRUCIBLE HEAT</div>
@@ -161,8 +184,10 @@
     </div>
   </div>
   <div id="hud-bottom" class="hud">
+    <div id="hint-msg"></div>
+    <div id="tip"></div>
     <div id="intro"></div>
-    <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; ESC pause</div>
+    <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; H hint &nbsp;&nbsp; ESC pause</div>
   </div>
 
   <div id="overlay"><div id="overlay-title"></div><div id="overlay-sub"></div></div>
@@ -175,6 +200,7 @@
     <div id="tactions">
       <button data-act="rotl" aria-label="Rotate left">⟲</button><button data-act="rotr" aria-label="Rotate right">⟳</button>
       <button data-act="restart" aria-label="Restart">↺</button><button data-act="undo" aria-label="Undo">UNDO</button>
+      <button data-act="hint" aria-label="Hint" class="thint">💡</button>
     </div>
   </div>
   <div id="ui"></div>

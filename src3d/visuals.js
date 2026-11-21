@@ -368,6 +368,7 @@ export function buildLevel(level, m) {
   const span = Math.max(level.w, level.d);
   group.add(makeStars(span * 1.4));
   const holes = buildHoleRims(level, group);
+  const rails = buildEdgeRails(level, group);
   const plateList = [...plates.values()];
   const sparkles = makePlateSparkles(plateList);
   group.add(sparkles);
@@ -423,6 +424,16 @@ export function buildLevel(level, m) {
         // A crate resting in the hole turns it into floor: hide its hazard marking.
         h.group.visible = !state?.blocks.some((b) => b.x === h.x && b.y === h.y && b.z === h.z - 1);
       }
+      // Edge rails: soft pulse; rails on floors above the highest element fade with the cutaway.
+      let topZ = Infinity;
+      if (state) {
+        const zs = ['sol', 'cryo'].filter((k) => !state[k].fallen).map((k) => state[k].z);
+        if (zs.length) topZ = Math.max(...zs);
+      }
+      const rp = 0.5 + 0.5 * Math.sin(t * 2.4);
+      rails.paneMat.opacity = 0.07 + 0.05 * rp;
+      rails.barMat.opacity = 0.55 + 0.25 * rp;
+      for (const r of rails.list) r.group.visible = r.z - 1 <= topZ;
       m.h.emissiveIntensity = 0.38 + 0.16 * Math.sin(t * 2.2);
       const flick = 1 + 0.06 * Math.sin(t * 13) + 0.04 * Math.sin(t * 7.3);
       cLight.intensity = 3.2 * heatFrac * flick;
@@ -459,7 +470,7 @@ export function buildLevel(level, m) {
 // Glowing hazard edges where walkable floor meets a drop into the void, plus a faint red
 // haze over the opening, so lethal holes read clearly. (Drops to a lower floor are left plain:
 // terrace steps are already readable and rims there were visual noise.)
-const RIM_SOLID = new Set(['#', 'c', 'h', 'X', '=']);
+const RIM_SOLID = new Set(['#', 'c', 'h', 'X', '=', 'q', 'p', 'P']);
 const RIM_AIR = new Set(['.', '^', 'v']);
 const rimGeoX = new THREE.BoxGeometry(0.94, 0.03, 0.06);
 const rimGeoZ = new THREE.BoxGeometry(0.06, 0.03, 0.94);
@@ -505,6 +516,43 @@ function buildHoleRims(level, group) {
     }
   }
   return { list: [...holes.values()], mat, hazeMat };
+}
+
+// Edge rails: the map boundary is a wall in the rules (cellAt returns '#' outside x/y), so
+// show it. A low cyan-white force-field along the outer edge of every walkable boundary cell.
+// Cyan-white rail = wall you bump into; red rim = lethal drop. Red rims only face inward
+// neighbours, so the two never overlap.
+const railBarX = new THREE.BoxGeometry(0.94, 0.035, 0.035);
+const railBarZ = new THREE.BoxGeometry(0.035, 0.035, 0.94);
+const railPaneX = new THREE.PlaneGeometry(0.94, 0.22);
+function buildEdgeRails(level, group) {
+  const tmp = new THREE.Vector3();
+  const barMat = new THREE.MeshBasicMaterial({
+    color: 0xcff6ff, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const paneMat = new THREE.MeshBasicMaterial({
+    color: 0x7fe3ff, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false,
+    toneMapped: false, side: THREE.DoubleSide,
+  });
+  const byZ = new Map();
+  for (let z = 1; z < level.h; z++) for (let y = 0; y < level.d; y++) for (let x = 0; x < level.w; x++) {
+    if (!RIM_SOLID.has(level.cells[z - 1][y][x]) || !RIM_AIR.has(level.cells[z][y][x])) continue;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && ny >= 0 && nx < level.w && ny < level.d) continue; // only the map boundary
+      if (!byZ.has(z)) { const g = new THREE.Group(); group.add(g); byZ.set(z, { z, group: g }); }
+      const g = byZ.get(z).group;
+      cellToWorld(level, x, y, z, tmp);
+      const ex = tmp.x + dx * 0.48, ez = tmp.z + dy * 0.48;
+      const bar = new THREE.Mesh(dx !== 0 ? railBarZ : railBarX, barMat);
+      bar.position.set(ex, z + 0.2, ez);
+      const pane = new THREE.Mesh(railPaneX, paneMat);
+      pane.position.set(ex, z + 0.09, ez);
+      if (dx !== 0) pane.rotation.y = Math.PI / 2;
+      g.add(bar, pane);
+    }
+  }
+  return { list: [...byZ.values()], barMat, paneMat };
 }
 
 // ---------- elements ----------

@@ -308,11 +308,15 @@ function buildPause() {
     onOpen: () => {
       const info = api.levelInfo();
       pause.el.querySelector('.pause-chamber').textContent = `DECK ${pad(info.index + 1)} · ${info.name.toUpperCase()}`;
+      pause.el.querySelector('.skip-btn')?.classList.toggle('disabled', !!info.last);
     },
   });
   pause.el.querySelector('.menu-list').append(
     button('RESUME', () => resume()),
     button('RESTART DECK', () => { close(false); api.restart(); }),
+    button('SKIP DECK', () => askConfirm('SKIP THIS DECK?',
+      'The next deck unlocks now. You can come back to this one any time from Chapter Select.', 'SKIP',
+      () => { closeAll(); api.skipDeck(); }), { cls: 'skip-btn' }),
     button('SETTINGS', () => open(settingsScreen)),
     button('MAIN MENU', () => showMainMenu()),
   );
