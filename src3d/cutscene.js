@@ -1,7 +1,7 @@
 // Data-driven cutscene player: real-time 3D stage (with 2D fallback), letterbox,
 // fades, typewriter subtitles, optional voice-over & sound cues, Enter/click = next, hold Esc = skip.
 import { CUTSCENES } from './cutscenes.js';
-import { loadVoice, startVoice, stopVoice, duckMusic, sfx, playCutsceneCue, stopCutsceneCue } from './audio.js';
+import { loadVoice, startVoice, stopVoice, duckMusic, restartMusic, sfx, playCutsceneCue, stopCutsceneCue, playFractureBoom } from './audio.js';
 import { settings } from './store.js';
 import { createCutscene3D } from './cutscene3d.js';
 
@@ -48,9 +48,11 @@ export function playCutscene(id, { onDone, setCutscene3D } = {}) {
   ring.style.strokeDasharray = `${CIRC}`;
   ring.style.strokeDashoffset = `${CIRC}`;
 
-  function triggerFlash() {
+  function triggerFlash(kind = 'fracture') {
+    if (kind === 'fracture') playFractureBoom(0.85);
+    else if (kind === 'fuse') sfx('fuse', 0.9);
     flashEl.style.transition = 'none';
-    flashEl.style.opacity = '0.88';
+    flashEl.style.opacity = kind === 'launch' ? '0.38' : kind === 'fuse' ? '0.76' : '0.88';
     requestAnimationFrame(() => {
       flashEl.style.transition = 'opacity 0.65s ease-out';
       flashEl.style.opacity = '0';
@@ -61,6 +63,7 @@ export function playCutscene(id, { onDone, setCutscene3D } = {}) {
   if (is3D) {
     const mobile = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
     cs3d = createCutscene3D({ mobile, onFlash: triggerFlash });
+    if (shots[0]?.art) cs3d.setShot(shots[0].art);
     setCutscene3D(cs3d);
   }
 
@@ -69,10 +72,18 @@ export function playCutscene(id, { onDone, setCutscene3D } = {}) {
   let index = devShot !== null ? devShot - 1 : -1;
   let done = false, typing = null, autoTimer = 0, cutTimer = 0, titleTimer = 0, holdStart = 0, holdRaf = 0, token = 0;
 
+  restartMusic(16); // start 16s into the soundtrack
   duckMusic(true);
   requestAnimationFrame(() => el.classList.add('show'));
   if (devShot !== null) next();
   else setTimeout(next, 450);
+
+  // Title card reveal: also swell the ducked soundtrack back to full.
+  function revealTitle() {
+    if (el.classList.contains('title-in')) return;
+    el.classList.add('title-in');
+    duckMusic(false, 1.2);
+  }
 
   async function show(i) {
     const my = ++token;
@@ -101,14 +112,14 @@ export function playCutscene(id, { onDone, setCutscene3D } = {}) {
         if (devTime !== null) {
           sub.textContent = shot.text ?? '';
           typing = null;
-          if (shot.title) el.classList.add('title-in');
+          if (shot.title) revealTitle();
         } else {
           const voiceDur = startVoice(buf);
-          typeText(shot.text ?? '', () => { if (shot.title) el.classList.add('title-in'); }, voiceDur);
+          typeText(shot.text ?? '', () => { if (shot.title) revealTitle(); }, voiceDur);
           playCutsceneCue(shot.cue, { quiet: !!buf, dur: waitSec });
           if (shot.title) {
-            const revealMs = Math.round((voiceDur ? voiceDur * 0.52 : 2.6) * 1000);
-            titleTimer = setTimeout(() => { if (!done && my === token) el.classList.add('title-in'); }, revealMs);
+            const revealMs = Math.round((shot.titleDelay != null ? shot.titleDelay : voiceDur ? voiceDur * 0.52 : 2.6) * 1000);
+            titleTimer = setTimeout(() => { if (!done && my === token) revealTitle(); }, revealMs);
           }
           if (devShot === null) {
             autoTimer = setTimeout(next, waitSec * 1000);
@@ -144,7 +155,7 @@ export function playCutscene(id, { onDone, setCutscene3D } = {}) {
     el.classList.toggle('title-card', !!shot.title);
     el.classList.remove('title-in');
     const voiceDur = startVoice(buf);
-    typeText(shot.text ?? '', () => { if (shot.title) el.classList.add('title-in'); }, voiceDur);
+    typeText(shot.text ?? '', () => { if (shot.title) revealTitle(); }, voiceDur);
 
     if (devShot !== null || devTime !== null) return; // keep dev inspection shots steady
     autoTimer = setTimeout(next, waitSec * 1000);

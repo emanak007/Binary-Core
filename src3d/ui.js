@@ -237,6 +237,16 @@ function buildChapters() {
         card.onActivate = () => startLevel(i);
         wrap.append(card);
       });
+      if (progress.best[LEVELS.length - 1] != null) {
+        const epilogue = h(`<div class="card prologue" data-nav>
+          <div class="card-num">★</div><div class="card-kicker">EPILOGUE</div><div class="card-name">The Bond Holds</div>
+          <div class="card-foot"><span class="play">▶</span> WATCH ENDING</div></div>`);
+        epilogue.onActivate = () => {
+          api.setMode('cutscene');
+          runCutscene('ending', () => api.setMode('menu'));
+        };
+        wrap.append(epilogue);
+      }
     },
   });
 }
@@ -409,6 +419,7 @@ export function openPause() {
 export function showEnd(stats) {
   closeAll();
   api.setMode('menu');
+  sfx('vo_end', 1);
   end.el.querySelector('.st-ch').textContent = stats.chambers;
   end.el.querySelector('.st-turns').textContent = stats.turns;
   renderShipStatus(end.el.querySelector('.end-ship'), {
@@ -418,9 +429,16 @@ export function showEnd(stats) {
   open(end);
 }
 
-// Dev: ?screen=settings|chapters|credits|cutscene|end|pause
+export function playEnding(stats) {
+  closeAll();
+  api.setMode('cutscene');
+  runCutscene('ending', () => showEnd(stats));
+}
+
+// Dev: ?screen=settings|chapters|credits|cutscene|ending|end|pause
 export function openDevScreen(name) {
   if (name === 'cutscene') { api.setMode('cutscene'); runCutscene('intro', () => showMainMenu()); return; }
+  if (name === 'ending') { playEnding({ chambers: LEVELS.length, turns: 42 }); return; }
   if (name === 'end') { showEnd({ chambers: LEVELS.length, turns: 42 }); return; }
   if (name === 'pause') { api.startLevel(0); openPause(); return; }
   showMainMenu();

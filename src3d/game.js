@@ -594,10 +594,11 @@ function celebrate() {
 
   const last = levelIndex === LEVELS.length - 1;
   after(1550, () => {
-    if (last) {
-      sfx('vo_end', 1);
-      if (!SHOT) { ui.showEnd({ chambers: LEVELS.length, turns: runTurns }); return; }
+    if (last && !SHOT) {
+      ui.playEnding({ chambers: LEVELS.length, turns: runTurns });
+      return;
     }
+    if (last) sfx('vo_end', 1);
     // Lore: each chamber's Crucible relights one deck; the surge throws them into the next.
     $('overlay').classList.add('win');
     const shipEl = $('overlay-ship');

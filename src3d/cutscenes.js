@@ -21,4 +21,12 @@ export const CUTSCENES = {
     { image: 'assets/cutscenes/intro_06.png', voice: 'vo_intro_06', cue: 'cs_title', duration: 6, art: 'title', title: true,
       text: 'Relight the reactor, deck by deck. Bring them together, as many times as it takes.' },
   ],
+  ending: [
+    { voice: 'vo_end_01', cue: 'cs_end_fuse', duration: 5.8, art: 'end_fuse',
+      text: 'At the heart of the Meridian, Sol and Cryo fuse — and this time, the bond holds.' },
+    { voice: 'vo_end_02', cue: 'cs_end_launch', duration: 6.4, art: 'end_launch',
+      text: 'The reactor roars back to life. All fifteen decks ignite, and the Meridian wakes.' },
+    { voice: 'vo_end_03', cue: 'cs_end_title', duration: 5.8, art: 'end_title', title: true, titleDelay: 0.65,
+      text: 'The Bond Holds.' },
+  ],
 };

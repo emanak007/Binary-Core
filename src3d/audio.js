@@ -4,7 +4,7 @@
 
 export const SOUND_KEYS = [
   'step_solid', 'step_liquid', 'step_gas', 'bump', 'push', 'melt', 'boil', 'freeze',
-  'fall', 'tether', 'fuse', 'deck_online', 'fail', 'undo', 'music', 'ui_move', 'ui_select', 'ui_back',
+  'fall', 'tether', 'fuse', 'deck_online', 'cs_fracture_boom', 'fail', 'undo', 'music', 'ui_move', 'ui_select', 'ui_back',
   'vo_1', 'vo_2', 'vo_3', 'vo_4', 'vo_5', 'vo_end',
 ];
 
@@ -36,8 +36,13 @@ let music = null;
 let musicWanted = false;
 let voiceSrc = null;
 const vol = { master: 0.8, music: 0.6, sfx: 0.8 };
-// Alternative filenames tried in order (e.g. the BGM tracks you exported).
-const ALIASES = { music: ['Open_Horizon', 'music', 'BGM1', 'BGM2'] };
+// Alternative filenames tried in order (e.g. custom exports).
+const ALIASES = {
+  music: ['Open_Horizon', 'music', 'BGM1', 'BGM2'],
+  fuse: ['fusing_effect', 'fuse'],
+  deck_online: ['completion_sound', 'deck_online'],
+  cs_fracture_boom: ['Explosion_CutScene', 'cs_fracture'],
+};
 const buffers = new Map();
 
 function applyGains() {
@@ -137,6 +142,7 @@ export function sfx(key, volume = 0.6) {
   src.start();
 }
 
+let musicOffset = 0; // seconds into the track for the next start
 export function startMusic() {
   musicWanted = true;
   if (music || !ensureCtx() || !buffers.has('music')) return;
@@ -146,13 +152,27 @@ export function startMusic() {
   music.buffer = buffers.get('music');
   music.loop = true;
   music.connect(gain).connect(musicBus);
-  music.start();
+  music.start(0, musicOffset % music.buffer.duration);
+  musicOffset = 0;
+}
+
+// Restart the soundtrack at `offset` seconds (used when the intro cutscene begins,
+// so the track's drop lands as gameplay starts).
+export function restartMusic(offset = 0) {
+  musicOffset = offset;
+  if (music) {
+    try { music.stop(); } catch {}
+    music.disconnect();
+    music = null;
+  }
+  startMusic();
 }
 
 // Lower the music under cutscene voice-over.
-export function duckMusic(on) {
+export function duckMusic(on, tc = 0.4) {
   if (!ensureCtx()) return;
-  duckGain.gain.setTargetAtTime(on ? 0.26 : 1, ctx.currentTime, 0.4);
+  duckGain.gain.cancelScheduledValues(ctx.currentTime);
+  duckGain.gain.setTargetAtTime(on ? 0.26 : 1, ctx.currentTime, tc);
 }
 
 // Voice lines: load on demand (cutscene keys aren't in SOUND_KEYS). Returns a buffer or null.
@@ -279,12 +299,9 @@ export async function playCutsceneCue(key, { quiet = false, dur = 6 } = {}) {
       cueTone(t + 0.35, 440, 442, Math.max(3.5, d - 0.4), 'triangle', 0.03, { attack: 1.0, filterFreq: 900 });
       break;
     case 'cs_fracture':
-      // Rising overload build (0..1.72s) -> sub-boom + crackle impact synced to "fractured"
+      // Rising overload build (0..1.72s); impact boom plays on onFlash via playFractureBoom().
       cueTone(t, 90, 480, 1.7, 'sawtooth', 0.07, { attack: 1.35, filterFreq: 1200 });
       cueTone(t, 135, 700, 1.7, 'triangle', 0.05, { attack: 1.4 });
-      cueTone(t + 1.68, 125, 34, 2.2, 'sine', 0.24, { attack: 0.02 });
-      cueNoise(t + 1.68, 1.4, 2600, 140, 0.18, { type: 'lowpass', q: 1.2, attack: 0.01 });
-      cueTone(t + 1.72, 1320, 440, 0.9, 'triangle', 0.05, { attack: 0.01 });
       break;
     case 'cs_apart':
       cueNoise(t, d, 1400, 700, 0.035, { type: 'bandpass', q: 2.5, attack: 0.8 });
@@ -302,5 +319,51 @@ export async function playCutsceneCue(key, { quiet = false, dur = 6 } = {}) {
       cueTone(t + 0.5, 261.6, 261.6, Math.max(3.2, d - 0.5), 'triangle', 0.04, { attack: 1.1, filterFreq: 1100 });
       cueTone(t + 0.9, 392, 392, Math.max(3.0, d - 0.9), 'sine', 0.04, { attack: 1.0 });
       break;
+    case 'cs_end_fuse':
+      // Harmonic convergence buildup (0..1.8s) into fusing_effect.mp3 on flash, then warm golden sustain
+      cueTone(t, 220, 440, 1.8, 'sine', 0.07, { attack: 1.2 });
+      cueTone(t + 0.1, 330, 660, 1.7, 'triangle', 0.04, { attack: 1.1, filterFreq: 1400 });
+      cueTone(t + 1.8, 261.6, 261.6, Math.max(3.0, d - 1.8), 'sine', 0.07, { attack: 0.5 });
+      cueTone(t + 1.85, 392, 392, Math.max(3.0, d - 1.85), 'sine', 0.05, { attack: 0.6 });
+      break;
+    case 'cs_end_launch':
+      // Reactor spool-up (0..2.1s) -> starship engine roar at 2.1s
+      cueTone(t, 52, 108, 2.1, 'sawtooth', 0.06, { attack: 1.5, filterFreq: 380 });
+      cueTone(t, 78, 162, 2.1, 'sine', 0.09, { attack: 1.4 });
+      cueNoise(t + 2.08, Math.max(3.0, d - 2.08), 180, 1500, 0.14, { type: 'bandpass', q: 1.1, attack: 0.12 });
+      cueTone(t + 2.08, 92, 44, Math.max(2.6, d - 2.08), 'sine', 0.16, { attack: 0.08 });
+      cueTone(t + 2.2, 196, 293.6, Math.max(2.6, d - 2.2), 'triangle', 0.05, { attack: 0.4, filterFreq: 1100 });
+      break;
+    case 'cs_end_title':
+      cueTone(t, 130.8, 130.8, d, 'sine', 0.08, { attack: 1.0 });
+      cueTone(t + 0.15, 196, 196, Math.max(3.5, d - 0.15), 'sine', 0.06, { attack: 1.0 });
+      cueTone(t + 0.35, 261.6, 261.6, Math.max(3.2, d - 0.35), 'triangle', 0.04, { attack: 1.1, filterFreq: 1200 });
+      cueTone(t + 0.55, 329.6, 329.6, Math.max(3.0, d - 0.55), 'sine', 0.04, { attack: 1.1 });
+      cueTone(t + 0.8, 587.3, 587.3, Math.max(2.8, d - 0.8), 'sine', 0.03, { attack: 1.2 });
+      break;
   }
+}
+
+export async function playFractureBoom(volume = 0.85) {
+  if (!ensureCtx() || muted) return;
+  let buf = buffers.get('cs_fracture_boom');
+  if (!buf) {
+    buf = await fetchBuffer(ALIASES.cs_fracture_boom);
+    if (buf) buffers.set('cs_fracture_boom', buf);
+  }
+  if (buf) {
+    const src = ctx.createBufferSource();
+    const gain = ctx.createGain();
+    gain.gain.value = volume;
+    src.buffer = buf;
+    src.connect(gain).connect(sfxBus);
+    src.start();
+    cueNodes.push(src, gain);
+    return;
+  }
+  const t = ctx.currentTime;
+  cueScale = 0.8;
+  cueTone(t, 125, 34, 2.2, 'sine', 0.24, { attack: 0.02 });
+  cueNoise(t, 1.4, 2600, 140, 0.18, { type: 'lowpass', q: 1.2, attack: 0.01 });
+  cueTone(t + 0.04, 1320, 440, 0.9, 'triangle', 0.05, { attack: 0.01 });
 }

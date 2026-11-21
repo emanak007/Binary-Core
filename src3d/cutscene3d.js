@@ -6,6 +6,8 @@ import { COL } from './visuals.js';
 import { settings } from './store.js';
 
 const FRACTURE_AT = 1.72;
+const END_FUSE_AT = 1.8;
+const LAUNCH_AT = 2.1;
 
 export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
   const disposables = [];
@@ -248,34 +250,9 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
     return { geo, pos, seeds };
   })();
 
-  // ==========================================================
-  // SHOT 1: ship — Starship Meridian drifting in the dark
-  // ==========================================================
-  const shipShot = (() => {
-    const g = new THREE.Group();
-    scene.add(g);
-
-    const keySun = new THREE.DirectionalLight(0xffd09a, 3.4);
-    keySun.position.set(14, 9, -8);
-    const fillLight = new THREE.DirectionalLight(0x4da8e0, 1.3);
-    fillLight.position.set(-10, -6, 10);
-    g.add(keySun, fillLight);
-
-    // Distant blazing star flare + anamorphic lens streak
-    const starFlare = new THREE.Sprite(track(new THREE.SpriteMaterial({
-      map: glowTex, color: 0xffe4bd, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
-    })));
-    starFlare.position.set(12.5, 4.8, -20);
-    starFlare.scale.setScalar(11.5);
-    const starStreak = new THREE.Sprite(track(new THREE.SpriteMaterial({
-      map: glowTex, color: 0xffcf94, transparent: true, opacity: 0.48, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
-    })));
-    starStreak.position.copy(starFlare.position);
-    starStreak.scale.set(26, 0.75, 1);
-    g.add(starFlare, starStreak);
-
+  // Reusable sculpted starship Meridian (shared by intro shipShot and ending launchShot)
+  function makeMeridianShip({ withPlumes = false } = {}) {
     const ship = new THREE.Group();
-    g.add(ship);
 
     const armorMat = track(new THREE.MeshStandardMaterial({
       color: 0x525d73, map: hullTex, metalness: 0.72, roughness: 0.34,
@@ -290,9 +267,6 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
     const winWarm = track(new THREE.MeshBasicMaterial({ color: 0xffb35c, toneMapped: false }));
     const engineMat = track(new THREE.MeshStandardMaterial({
       color: 0x26120b, emissive: 0xff6224, emissiveIntensity: 0.6, roughness: 0.4,
-    }));
-    const spineMat = track(new THREE.MeshStandardMaterial({
-      color: 0x33160d, emissive: 0xff7029, emissiveIntensity: 0.35, roughness: 0.5,
     }));
 
     // Main armored spine hull (prow toward +X, engines toward -X)
@@ -323,7 +297,6 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
       finTip.position.set(-3.3, 0.15, s * 3.55);
       ship.add(finTip);
 
-      // Cabin window strips
       for (let i = 0; i < 8; i++) {
         const w = new THREE.Mesh(track(new THREE.BoxGeometry(0.24, 0.06, 0.04)), i % 3 === 0 ? winWarm : winCyan);
         w.position.set(-2.8 + i * 0.78, 0.16, s * 2.02);
@@ -342,16 +315,33 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
     mast2.position.set(1.2, 1.55, -0.25);
     ship.add(bridge, bridgeVisor, mast1, mast2);
 
-    // Dorsal reactor spine vents (the Crucible relay along the spine)
+    // Dorsal reactor spine vents (individual materials so ending launch lights them sequentially)
+    const ventMats = [];
     for (let i = 0; i < 5; i++) {
-      const vent = new THREE.Mesh(track(new RoundedBoxGeometry(0.72, 0.18, 0.65, 2, 0.04)), spineMat);
+      const vm = track(new THREE.MeshStandardMaterial({
+        color: 0x33160d, emissive: 0xff7029, emissiveIntensity: 0.35, roughness: 0.45,
+      }));
+      const vent = new THREE.Mesh(track(new RoundedBoxGeometry(0.72, 0.18, 0.65, 2, 0.04)), vm);
       vent.position.set(-3.6 + i * 0.95, 0.7, 0);
       ship.add(vent);
+      ventMats.push(vm);
     }
 
-    // 3 Aft engine bells + dying glow sprites
+    // 3 Aft engine bells + glow sprites (+ optional thruster exhaust cones)
     const engineGlows = [];
-    for (const [ey, ez, er] of [[0, 0, 0.62], [-0.15, -1.25, 0.48], [-0.15, 1.25, 0.48]]) {
+    const plumes = [];
+    let plumeLight = null;
+    const coneGeo = withPlumes ? track(new THREE.ConeGeometry(1, 1, 18, 1, true)) : null;
+    if (coneGeo) coneGeo.translate(0, 0.5, 0);
+    const outerMat = withPlumes ? track(new THREE.MeshBasicMaterial({
+      color: 0x5ee7ff, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+    })) : null;
+    const innerMat = withPlumes ? track(new THREE.MeshBasicMaterial({
+      color: 0xffe4b0, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+    })) : null;
+
+    const specs = [[0, 0, 0.62], [-0.15, -1.25, 0.48], [-0.15, 1.25, 0.48]];
+    for (const [ey, ez, er] of specs) {
       const bell = new THREE.Mesh(track(new THREE.CylinderGeometry(er * 0.72, er, 1.2, 16)), darkMat);
       bell.rotation.z = Math.PI / 2;
       bell.position.set(-5.15, ey, ez);
@@ -365,7 +355,56 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
       sp.scale.setScalar(er * 3.6);
       ship.add(bell, core, sp);
       engineGlows.push(sp);
+
+      if (withPlumes) {
+        const pg = new THREE.Group();
+        pg.position.set(-5.72, ey, ez);
+        pg.rotation.z = Math.PI / 2;
+        const outer = new THREE.Mesh(coneGeo, outerMat);
+        outer.scale.set(er * 1.08, 1, er * 1.08);
+        const inner = new THREE.Mesh(coneGeo, innerMat);
+        inner.scale.set(er * 0.68, 0.66, er * 0.68);
+        pg.add(outer, inner);
+        ship.add(pg);
+        plumes.push({ pg, er });
+      }
     }
+    if (withPlumes) {
+      plumeLight = new THREE.PointLight(0xff9c48, 0, 20, 1.4);
+      plumeLight.position.set(-6.5, 0, 0);
+      ship.add(plumeLight);
+    }
+
+    return { ship, winCyan, winWarm, engineMat, ventMats, engineGlows, plumes, outerMat, innerMat, plumeLight };
+  }
+
+  // ==========================================================
+  // SHOT 1: ship — Starship Meridian drifting in the dark
+  // ==========================================================
+  const shipShot = (() => {
+    const g = new THREE.Group();
+    scene.add(g);
+
+    const keySun = new THREE.DirectionalLight(0xffd09a, 3.4);
+    keySun.position.set(14, 9, -8);
+    const fillLight = new THREE.DirectionalLight(0x4da8e0, 1.3);
+    fillLight.position.set(-10, -6, 10);
+    g.add(keySun, fillLight);
+
+    const starFlare = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffe4bd, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    starFlare.position.set(12.5, 4.8, -20);
+    starFlare.scale.setScalar(11.5);
+    const starStreak = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffcf94, transparent: true, opacity: 0.48, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    starStreak.position.copy(starFlare.position);
+    starStreak.scale.set(26, 0.75, 1);
+    g.add(starFlare, starStreak);
+
+    const { ship, engineMat, ventMats, engineGlows } = makeMeridianShip({ withPlumes: false });
+    g.add(ship);
 
     return {
       group: g,
@@ -376,7 +415,7 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
         const fade = Math.max(0.08, 1 - p * 0.85);
         const sputter = 0.75 + 0.25 * Math.sin(t * 17) * Math.sin(t * 5.3);
         engineMat.emissiveIntensity = 0.52 * fade * sputter;
-        spineMat.emissiveIntensity = 0.16 * fade;
+        for (const vm of ventMats) vm.emissiveIntensity = 0.16 * fade;
         for (const sp of engineGlows) sp.material.opacity = 0.42 * fade * sputter;
 
         camera.position.set(9.8 - p * 2.8, 2.6 - p * 0.45, 11.8 - p * 2.2);
@@ -632,7 +671,7 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
         if (!triggered) {
           triggered = true;
           shakeAmt = settings.shake && !settings.reducedMotion ? 0.38 : 0;
-          onFlash?.();
+          onFlash?.('fracture');
         }
         shakeAmt = Math.max(0, shakeAmt - dt * 0.55);
 
@@ -1040,7 +1079,378 @@ export function createCutscene3D({ mobile = false, onFlash = null } = {}) {
     };
   })();
 
-  const SHOTS = { ship: shipShot, core: coreShot, fracture: fractureShot, apart: apartShot, crucible: crucibleShot, title: titleShot };
+  // ==========================================================
+  // ENDING SHOT 1: end_fuse — Sol and Cryo permanently fuse into the Binary Alloy Core
+  // ==========================================================
+  const endFuseShot = (() => {
+    const g = new THREE.Group();
+    scene.add(g);
+
+    const rim = new THREE.DirectionalLight(0xffe0b8, 2.2);
+    rim.position.set(5, 8, 7);
+    g.add(rim);
+
+    const pillarMat = track(new THREE.MeshStandardMaterial({ color: 0x22293a, metalness: 0.72, roughness: 0.38 }));
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+      if (Math.sin(a) > 0.2) continue;
+      const pil = new THREE.Mesh(track(new RoundedBoxGeometry(1.15, 14, 1.15, 2, 0.1)), pillarMat);
+      pil.position.set(Math.cos(a) * 11.4, 0, Math.sin(a) * 11.4);
+      pil.rotation.y = -a;
+      g.add(pil);
+    }
+
+    const ringDarkMat = track(new THREE.MeshStandardMaterial({ color: 0x3b4458, metalness: 0.82, roughness: 0.24 }));
+    const gimbals = [
+      { r: 2.6, t: 0.06, c: 0xffa94d, rot: [1.15, 0.25, 0.2], spd: [0.22, 0.55, 0.18] },
+      { r: 3.35, t: 0.07, c: 0x5ee7ff, rot: [-1.1, 0.55, -0.3], spd: [-0.2, 0.45, -0.25] },
+      { r: 4.15, t: 0.08, c: 0xffcf94, rot: [0.85, -0.3, 0.55], spd: [0.25, -0.38, 0.28] },
+      { r: 5.05, t: 0.09, c: 0x70d8ff, rot: [0.2, 0.8, -0.45], spd: [-0.18, 0.28, -0.2] },
+    ].map((cfg) => {
+      const rg = new THREE.Group();
+      const body = new THREE.Mesh(track(new THREE.TorusGeometry(cfg.r, cfg.t, 14, 72)), ringDarkMat);
+      const inlay = new THREE.Mesh(track(new THREE.TorusGeometry(cfg.r, cfg.t * 0.38, 10, 72)),
+        track(new THREE.MeshBasicMaterial({ color: cfg.c, transparent: true, opacity: 0.78, toneMapped: false })));
+      rg.add(body, inlay);
+      g.add(rg);
+      return { rg, cfg };
+    });
+
+    const sol = makeHeroSol({ lightIntensity: 5.5 });
+    const cryo = makeHeroCryo({ lightIntensity: 5.5 });
+    const arc1 = makePlasmaArc(0xffe0b2, 3, 20);
+    const arc2 = makePlasmaArc(0x88f0ff, 2, 20);
+    g.add(sol.group, cryo.group, arc1.group, arc2.group);
+
+    // Monumental Binary Alloy Core
+    const alloyGroup = new THREE.Group();
+    const alloyOuter = new THREE.Mesh(
+      track(new RoundedBoxGeometry(0.95, 0.95, 0.95, 4, 0.22)),
+      track(new THREE.MeshStandardMaterial({ color: 0xffdc96, emissive: 0xffa83d, emissiveIntensity: 0.85, roughness: 0.2, metalness: 0.55 })),
+    );
+    const alloyInner = new THREE.Mesh(
+      track(new THREE.OctahedronGeometry(0.5, 0)),
+      track(new THREE.MeshBasicMaterial({ color: 0x6ef0ff, transparent: true, opacity: 0.88, toneMapped: false })),
+    );
+    const alloyAura = new THREE.Mesh(
+      track(new THREE.SphereGeometry(0.94, 24, 18)),
+      track(new THREE.MeshBasicMaterial({ color: 0xffc668, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })),
+    );
+    const alloyRingA = new THREE.Mesh(
+      track(new THREE.TorusGeometry(1.18, 0.024, 10, 64)),
+      track(new THREE.MeshBasicMaterial({ color: 0xffb85c, transparent: true, opacity: 0.88, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })),
+    );
+    const alloyRingC = new THREE.Mesh(
+      track(new THREE.TorusGeometry(1.42, 0.02, 10, 64)),
+      track(new THREE.MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.82, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })),
+    );
+    const alloyHalo = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffd288, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    alloyHalo.scale.setScalar(4.0);
+    const alloyLight = new THREE.PointLight(0xffcf7a, 4.8, 22, 1.4);
+    alloyGroup.add(alloyOuter, alloyInner, alloyAura, alloyRingA, alloyRingC, alloyHalo, alloyLight);
+    alloyGroup.visible = false;
+    g.add(alloyGroup);
+
+    const shockAMat = track(new THREE.MeshBasicMaterial({
+      color: 0xffcf78, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    const shockA = new THREE.Mesh(track(new THREE.TorusGeometry(0.75, 0.02, 12, 64)), shockAMat);
+    shockA.rotation.x = Math.PI / 2 - 0.3;
+    const shockCMat = track(new THREE.MeshBasicMaterial({
+      color: 0x6ef0ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    const shockC = new THREE.Mesh(track(new THREE.TorusGeometry(0.75, 0.016, 12, 64)), shockCMat);
+    shockC.rotation.set(0.45, 0.6, 0.3);
+    g.add(shockA, shockC);
+
+    const pN = mobile ? 110 : 220;
+    const pPos = new Float32Array(pN * 3), pCol = new Float32Array(pN * 3);
+    const pData = Array.from({ length: pN }, (_, i) => {
+      const c = new THREE.Color(i % 3 === 0 ? COL.sol : i % 3 === 1 ? COL.cryo : COL.alloy);
+      pCol[i * 3] = c.r; pCol[i * 3 + 1] = c.g; pCol[i * 3 + 2] = c.b;
+      return { a0: Math.random() * 6.28, r: 0.9 + Math.random() * 2.8, y: (Math.random() - 0.5) * 2.2, sp: 0.6 + Math.random() * 1.1 };
+    });
+    const pGeo = track(new THREE.BufferGeometry());
+    pGeo.setAttribute('position', new THREE.BufferAttribute(pPos, 3));
+    pGeo.setAttribute('color', new THREE.BufferAttribute(pCol, 3));
+    g.add(new THREE.Points(pGeo, track(new THREE.PointsMaterial({
+      size: 0.13, map: glowTex, vertexColors: true, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }))));
+
+    let triggered = false;
+
+    return {
+      group: g,
+      reset(startTime) {
+        triggered = startTime >= END_FUSE_AT;
+      },
+      update(shotT, _dt, t) {
+        const pre = shotT < END_FUSE_AT;
+        if (pre) {
+          const f = shotT / END_FUSE_AT;
+          const e = f * f;
+          const rad = 2.9 * (1 - e * 0.95);
+          const ang = shotT * (1.8 + e * 6.5);
+          sol.group.visible = cryo.group.visible = arc1.group.visible = arc2.group.visible = true;
+          alloyGroup.visible = shockA.visible = shockC.visible = false;
+          sol.group.position.set(Math.cos(ang) * rad, Math.sin(ang * 0.7) * 0.35 * (1 - f), Math.sin(ang) * rad);
+          cryo.group.position.set(-sol.group.position.x, -sol.group.position.y, -sol.group.position.z);
+          sol.core.rotation.set(t * 0.7, t * 1.1, 0);
+          cryo.crystal.rotation.set(0, -t * 1.1, 0.3);
+          cryo.edges.rotation.copy(cryo.crystal.rotation);
+          arc1.update(sol.group.position, cryo.group.position, t * 1.4, 0.25 + f * 0.15, 1);
+          arc2.update(cryo.group.position, sol.group.position, t * 1.4 + 1.2, 0.2, 0.85);
+
+          for (const { rg, cfg } of gimbals) {
+            rg.rotation.set(cfg.rot[0] + shotT * cfg.spd[0] * (1 + f), cfg.rot[1] + shotT * cfg.spd[1] * (1 + f), cfg.rot[2] + shotT * cfg.spd[2]);
+          }
+          for (let i = 0; i < pN; i++) {
+            const d = pData[i];
+            const a = d.a0 + shotT * d.sp * (1 + f * 2);
+            const r = d.r * (1 - e * 0.65);
+            pPos[i * 3] = Math.cos(a) * r;
+            pPos[i * 3 + 1] = d.y * (1 - e * 0.5) * Math.cos(a * 0.4);
+            pPos[i * 3 + 2] = Math.sin(a) * r;
+          }
+          pGeo.attributes.position.needsUpdate = true;
+
+          camera.position.set(1.2 * (1 - f), 0.7 - f * 0.35, 8.4 - f * 2.4);
+          camera.lookAt(0, 0, 0);
+          return;
+        }
+
+        const after = shotT - END_FUSE_AT;
+        if (!triggered) {
+          triggered = true;
+          onFlash?.('fuse');
+        }
+        sol.group.visible = cryo.group.visible = arc1.group.visible = arc2.group.visible = false;
+        alloyGroup.visible = true;
+
+        // Elastic pop settle for the fused Binary Alloy Core
+        const pf = Math.min(1, after / 0.9);
+        const popScale = pf >= 1 ? 1 : 2 ** (-9 * pf) * Math.sin((pf * 9 - 0.75) * (2 * Math.PI / 3)) + 1;
+        alloyGroup.scale.setScalar(Math.max(0.05, popScale));
+        alloyOuter.rotation.set(t * 0.35, t * 0.65, 0);
+        alloyInner.rotation.set(-t * 0.5, -t * 0.9, t * 0.2);
+        alloyRingA.rotation.set(0.6 + t * 1.1, t * 0.4, 0.3);
+        alloyRingC.rotation.set(-0.5 - t * 0.85, 0.4 - t * 0.6, -0.2);
+        alloyAura.scale.setScalar(1 + 0.08 * Math.sin(t * 3.8));
+
+        const sf = Math.min(1, after / 1.35);
+        shockA.visible = shockC.visible = sf < 1;
+        shockA.scale.setScalar(0.4 + (1 - (1 - sf) ** 2.2) * 7.2);
+        shockAMat.opacity = Math.max(0, (1 - sf) * 0.9);
+        shockC.scale.setScalar(0.3 + (1 - (1 - sf) ** 2.0) * 6.2);
+        shockCMat.opacity = Math.max(0, (1 - sf) * 0.82);
+
+        for (const { rg, cfg } of gimbals) {
+          rg.rotation.set(cfg.rot[0] + shotT * cfg.spd[0] * 0.65, cfg.rot[1] + shotT * cfg.spd[1] * 0.65, cfg.rot[2] + shotT * cfg.spd[2] * 0.65);
+        }
+        const haloExp = 0.5 + (1 - Math.exp(-after * 1.5)) * 1.25;
+        for (let i = 0; i < pN; i++) {
+          const d = pData[i];
+          const a = d.a0 + shotT * d.sp * 0.65;
+          const r = d.r * haloExp;
+          pPos[i * 3] = Math.cos(a) * r;
+          pPos[i * 3 + 1] = d.y * haloExp * 0.6 * Math.sin(a * 0.5);
+          pPos[i * 3 + 2] = Math.sin(a) * r;
+        }
+        pGeo.attributes.position.needsUpdate = true;
+
+        const pull = Math.min(1, after / 3.8);
+        camera.position.set(-pull * 1.6, 0.35 + pull * 0.45, 6.0 + pull * 2.8);
+        camera.lookAt(0, 0, 0);
+      },
+    };
+  })();
+
+  // ==========================================================
+  // ENDING SHOT 2: end_launch — Meridian wakes, ignites, and launches into space
+  // ==========================================================
+  const endLaunchShot = (() => {
+    const g = new THREE.Group();
+    scene.add(g);
+
+    const keySun = new THREE.DirectionalLight(0xffd6a6, 3.6);
+    keySun.position.set(14, 10, 6);
+    const fillLight = new THREE.DirectionalLight(0x5ec6ff, 1.5);
+    fillLight.position.set(-12, -5, 10);
+    g.add(keySun, fillLight);
+
+    const starFlare = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffe4bd, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    starFlare.position.set(17, 5.4, -32);
+    starFlare.scale.setScalar(7.5);
+    const starStreak = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffcf94, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    starStreak.position.copy(starFlare.position);
+    starStreak.scale.set(20, 0.55, 1);
+    g.add(starFlare, starStreak);
+
+    const { ship, engineMat, ventMats, engineGlows, plumes, outerMat, innerMat, plumeLight } = makeMeridianShip({ withPlumes: true });
+    outerMat.color.setHex(0x3ad6ff);
+    innerMat.color.setHex(0xffb44d);
+    ship.rotation.set(0.14, 0.34, 0.14);
+    g.add(ship);
+
+    const forward = new THREE.Vector3(1, 0, 0).applyEuler(ship.rotation).normalize();
+    const basePos = new THREE.Vector3(-1.4, -0.25, 0.7);
+    const shipPos = new THREE.Vector3();
+
+    // Exhaust spark stream behind the 3 engine bells
+    const spN = mobile ? 110 : 220;
+    const spPos = new Float32Array(spN * 3), spCol = new Float32Array(spN * 3);
+    const spSeeds = Array.from({ length: spN }, (_, i) => {
+      const c = new THREE.Color(i % 2 === 0 ? 0xffae52 : 0x6eeeff);
+      spCol[i * 3] = c.r; spCol[i * 3 + 1] = c.g; spCol[i * 3 + 2] = c.b;
+      return { o: Math.random(), sp: 0.65 + Math.random() * 0.9, spread: (Math.random() - 0.5) * 0.9, vSpread: (Math.random() - 0.5) * 0.7, nozzle: i % 3 };
+    });
+    const spGeo = track(new THREE.BufferGeometry());
+    spGeo.setAttribute('position', new THREE.BufferAttribute(spPos, 3));
+    spGeo.setAttribute('color', new THREE.BufferAttribute(spCol, 3));
+    const spMat = track(new THREE.PointsMaterial({
+      size: 0.13, map: glowTex, vertexColors: true, transparent: true, opacity: 0.68,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }));
+    g.add(new THREE.Points(spGeo, spMat));
+
+    const nozzleOffsets = [new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -0.15, -1.25), new THREE.Vector3(0, -0.15, 1.25)]
+      .map((v) => v.applyEuler(ship.rotation));
+
+    let launched = false;
+
+    return {
+      group: g,
+      reset(startTime) {
+        launched = startTime >= LAUNCH_AT;
+      },
+      update(shotT, _dt, t) {
+        const warm = Math.min(1, shotT / LAUNCH_AT);
+        const after = Math.max(0, shotT - LAUNCH_AT);
+        if (after > 0 && !launched) {
+          launched = true;
+          onFlash?.('launch');
+        }
+
+        // Sequential ignition of the 5 dorsal reactor spine vents (aft to bow)
+        for (let i = 0; i < ventMats.length; i++) {
+          const lit = Math.max(0, Math.min(1, (shotT - i * 0.3) / 0.45));
+          ventMats[i].emissiveIntensity = 0.12 + lit * 1.15;
+        }
+
+        const thrust = after > 0 ? 1 + Math.min(1.4, after * 0.75) : 0.15 + warm * 0.85;
+        const flick = 0.88 + 0.12 * Math.sin(t * 28) * Math.cos(t * 17);
+        engineMat.emissiveIntensity = 0.4 + thrust * 0.75;
+        outerMat.opacity = (after > 0 ? 0.34 : 0.12 + warm * 0.2) * flick;
+        innerMat.opacity = (after > 0 ? 0.68 : 0.2 + warm * 0.45) * flick;
+        plumeLight.intensity = (after > 0 ? 3.2 : 0.6 + warm * 2.2) * flick;
+
+        const lenScale = after > 0 ? (2.2 + Math.min(2.6, after * 1.1)) * flick : (0.3 + warm * 1.45) * flick;
+        for (const { pg, er } of plumes) pg.scale.set(er * (0.9 + thrust * 0.14), lenScale, er * (0.9 + thrust * 0.14));
+        for (const sp of engineGlows) sp.material.opacity = Math.min(0.45, 0.2 + thrust * 0.22);
+
+        const travel = after > 0 ? Math.pow(after, 2.05) * 2.25 : 0;
+        const rumble = after > 0 ? 0 : warm * 0.025 * Math.sin(t * 42);
+        shipPos.copy(basePos).addScaledVector(forward, travel);
+        shipPos.y += Math.sin(t * 1.2) * 0.08 * (1 - Math.min(1, after)) + rumble;
+        ship.position.copy(shipPos);
+
+        // Exhaust spark stream flowing backward along -forward
+        const streamLen = after > 0 ? 11 : 2.5 + warm * 4.5;
+        spMat.opacity = after > 0 ? 0.68 : 0.2 + warm * 0.42;
+        for (let i = 0; i < spN; i++) {
+          const sd = spSeeds[i];
+          const f = (sd.o + shotT * sd.sp * (after > 0 ? 1.8 : 0.9)) % 1;
+          const noz = nozzleOffsets[sd.nozzle];
+          const dist = 5.8 + f * streamLen;
+          spPos[i * 3] = shipPos.x + noz.x - forward.x * dist + sd.spread * f * 1.5;
+          spPos[i * 3 + 1] = shipPos.y + noz.y - forward.y * dist + sd.vSpread * f * 1.4;
+          spPos[i * 3 + 2] = shipPos.z + noz.z - forward.z * dist + sd.spread * 0.7 * f;
+        }
+        spGeo.attributes.position.needsUpdate = true;
+
+        const trackF = Math.min(1, after / 3.8);
+        camera.position.set(-5.2 - trackF * 1.4, 2.5 + trackF * 0.6, 12.6 + trackF * 2.2);
+        camera.lookAt(shipPos.x * 0.52 + 0.8, shipPos.y * 0.55 + 0.2, shipPos.z * 0.55 - 0.3);
+      },
+    };
+  })();
+
+  // ==========================================================
+  // ENDING SHOT 3: end_title — Distant Meridian trail & BINARY CORE title
+  // ==========================================================
+  const endTitleShot = (() => {
+    const g = new THREE.Group();
+    scene.add(g);
+
+    const beacon = new THREE.Group();
+    const bAmber = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffb35c, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    bAmber.scale.setScalar(2.4);
+    const bCyan = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0x6eeeff, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    bCyan.position.set(-0.35, -0.1, 0);
+    bCyan.scale.setScalar(1.65);
+    const bStreak = new THREE.Sprite(track(new THREE.SpriteMaterial({
+      map: glowTex, color: 0xffe6bd, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    })));
+    bStreak.rotation.z = 0.28;
+    bStreak.scale.set(5.5, 0.25, 1);
+    beacon.add(bAmber, bCyan, bStreak);
+    g.add(beacon);
+
+    // Sweeping luminous stardust wake across the lower/diagonal sky (keeps center open for BINARY CORE)
+    const rN = mobile ? 80 : 160;
+    const rPos = new Float32Array(rN * 3), rCol = new Float32Array(rN * 3);
+    const rGeo = track(new THREE.BufferGeometry());
+    rGeo.setAttribute('position', new THREE.BufferAttribute(rPos, 3));
+    rGeo.setAttribute('color', new THREE.BufferAttribute(rCol, 3));
+    g.add(new THREE.Points(rGeo, track(new THREE.PointsMaterial({
+      size: 0.16, map: glowTex, vertexColors: true, transparent: true, opacity: 0.85,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }))));
+
+    return {
+      group: g,
+      update(shotT, _dt, t) {
+        const p = Math.min(1, shotT / shotDur);
+        const bx = 4.6 + p * 5.2;
+        const by = 1.65 + p * 1.45;
+        const bz = -10.5 - p * 8.5;
+        beacon.position.set(bx, by, bz);
+        beacon.scale.setScalar(1 - p * 0.42);
+
+        for (let i = 0; i < rN; i++) {
+          const f = i / rN;
+          const fade = Math.sin(f * Math.PI) * 0.85;
+          rPos[i * 3] = -8.2 + f * (bx + 8.2);
+          rPos[i * 3 + 1] = -2.4 + Math.pow(f, 1.35) * (by + 2.4) + Math.sin(f * 8 - t * 1.5) * 0.1;
+          rPos[i * 3 + 2] = 2.0 + f * (bz - 2.0) + Math.cos(f * 6 + t) * 0.15;
+          rCol[i * 3] = (0.35 + f * 0.65) * fade;
+          rCol[i * 3 + 1] = (0.85 - f * 0.18) * fade;
+          rCol[i * 3 + 2] = (1.0 - f * 0.55) * fade;
+        }
+        rGeo.attributes.position.needsUpdate = true;
+        rGeo.attributes.color.needsUpdate = true;
+
+        camera.position.set(0, 0.15, 10.0 - p * 1.2);
+        camera.lookAt(0, 0.15, 0);
+      },
+    };
+  })();
+
+  const SHOTS = {
+    ship: shipShot, core: coreShot, fracture: fractureShot, apart: apartShot, crucible: crucibleShot, title: titleShot,
+    end_fuse: endFuseShot, end_launch: endLaunchShot, end_title: endTitleShot,
+  };
   let activeKey = null;
   let shotT = 0;
   let shotDur = 6;
