@@ -4,7 +4,7 @@
 <style>body{background:#14161d;color:#d6dae3;font:14px monospace;padding:16px}</style></head>
 <body><pre id="out">running…</pre>
 <script type="module">
-  import { parseLevel, step, cellAt, STATE } from '../src3d/rules.js';
+  import { parseLevel, step, cellAt, STATE, OPTIONS } from '../src3d/rules.js';
   const out = [];
   let fails = 0;
   const check = (name, cond, info = '') => {
@@ -113,6 +113,70 @@
       ]);
       const r = step(level, state, 'east');
       check('win when both rest on crucible', r.state.status === 'won', `${r.state.status} sol ${at(r.state.sol)} cryo ${at(r.state.cryo)}`);
+    }
+    // ---- Thermal plates ----
+    const idx = (ev, pred) => ev.findIndex(pred);
+    // 11. Sol leaving a warm plate makes it hot (event after the move).
+    {
+      const { level, state } = L([['XXp##'], ['..S..']]);
+      const r = step(level, state, 'east');
+      const iMove = idx(r.events, (e) => e.type === 'move' && e.who === 'sol');
+      const iPlate = idx(r.events, (e) => e.type === 'plate');
+      check('Sol leaving warm plate -> hot', r.state.plates['2,0,0'] === 2 && iPlate > iMove, `${r.state.plates['2,0,0']} move@${iMove} plate@${iPlate}`);
+      const pe = r.events[iPlate];
+      check('plate event shape', pe && pe.x === 2 && pe.y === 0 && pe.z === 0 && pe.from === 1 && pe.to === 2, JSON.stringify(pe));
+    }
+    // 12. Cryo leaving a warm plate makes it cold.
+    {
+      const { level, state } = L([['XXp##'], ['..C..']]);
+      const r = step(level, state, 'east');
+      check('Cryo leaving warm plate -> cold', r.state.plates['2,0,0'] === 0, String(r.state.plates['2,0,0']));
+    }
+    // 13. Clamping: Sol leaving a hot plate keeps it hot, no event.
+    {
+      const { level, state } = L([['XX#P##'], ['...S..'], ['......']]);
+      // Sol on a hot plate is liquid; still leaves it hot.
+      const r = step(level, state, 'east');
+      check('plate clamps at hot (no event)', r.state.plates['3,0,0'] === 2 && !r.events.some((e) => e.type === 'plate'), JSON.stringify(r.state.plates));
+    }
+    // 14. Sol leads, Cryo follows onto the now-hot plate in the same turn -> gas -> rises.
+    {
+      const { level, state } = L([['XX#p##'], ['..CS..'], ['......']]);
+      const r = step(level, state, 'east');
+      // Sol heats it to 2; Cryo then rises off it, cooling it back to 1 (both trails apply).
+      const plates = r.events.filter((e) => e.type === 'plate').map((e) => `${e.from}>${e.to}`).join(',');
+      check('follower Cryo boils on Sol-heated plate and rises', r.state.cryo.st === STATE.GAS && r.state.cryo.z === 2 && plates === '1>2,2>1', `${r.state.cryo.st} ${at(r.state.cryo)} plates ${plates}`);
+    }
+    // 15. Cryo leads, Sol follows onto the now-cold plate -> frozen.
+    {
+      const { level, state } = L([['XX#p##'], ['..SC..']]);
+      const r = step(level, state, 'east');
+      check('follower Sol freezes on Cryo-chilled plate', r.state.sol.st === STATE.FROZEN && r.state.sol.x === 3 && r.state.plates['3,0,0'] === 0, `${r.state.sol.st} ${at(r.state.sol)}`);
+    }
+    // 16. Rising off a plate triggers it (rise event first, then plate event).
+    {
+      const { level, state } = L([['XX#P##'], ['..C...'], ['......']]);
+      const r = step(level, state, 'east');
+      const iRise = idx(r.events, (e) => e.type === 'rise' && e.who === 'cryo');
+      const iPlate = idx(r.events, (e) => e.type === 'plate');
+      check('rising off a plate cools it (after rise event)', r.state.plates['3,0,0'] === 1 && iRise >= 0 && iPlate > iRise, `plate ${r.state.plates['3,0,0']} rise@${iRise} plate@${iPlate}`);
+    }
+    // 17. Shoved off a plate triggers it too (frozen Sol on cold plate, solid Cryo shoves).
+    {
+      const { level, state } = L([['#qqq#', 'XX###'], ['.CS..', '.....']]);
+      const r = step(level, state, 'east');
+      check('shoved Sol warms the plate it leaves', r.state.sol.x === 3 && r.state.plates['2,0,0'] === 1 && r.state.cryo.st === STATE.LIQUID, `sol ${at(r.state.sol)} plate ${r.state.plates['2,0,0']} cryo ${r.state.cryo.st}`);
+    }
+    // 18. step does not mutate input plates; OPTIONS.plateTrails=false disables trails.
+    {
+      const { level, state } = L([['XX#p##'], ['..CS..'], ['......']]);
+      const before = JSON.stringify(state);
+      step(level, state, 'east');
+      check('step does not mutate input (plates)', JSON.stringify(state) === before);
+      OPTIONS.plateTrails = false;
+      const r = step(level, state, 'east');
+      OPTIONS.plateTrails = true;
+      check('plateTrails=false disables trails', r.state.plates['3,0,0'] === 1 && r.state.cryo.st === STATE.LIQUID, `${r.state.plates['3,0,0']} ${r.state.cryo.st}`);
     }
   } catch (err) {
     fails++;

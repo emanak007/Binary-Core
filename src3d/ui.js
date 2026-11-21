@@ -189,7 +189,7 @@ function buildMain() {
       const cont = Math.min(progress.unlocked, LEVELS.length) - 1;
       list.append(
         button('CONTINUE', () => startLevel(cont), {
-          disabled: !hasProgress(), sub: hasProgress() ? `CHAMBER ${pad(cont + 1)} · ${LEVELS[cont].name.toUpperCase()}` : '',
+          disabled: !hasProgress(), sub: hasProgress() ? `DECK ${pad(cont + 1)} · ${LEVELS[cont].name.toUpperCase()}` : '',
         }),
         button('NEW GAME', newGame),
         button('CHAPTER SELECT', () => open(chapters)),
@@ -205,7 +205,7 @@ function buildChapters() {
   chapters = makeScreen('screen-chapters panel-screen', `
     <div class="menu-shade full"></div>
     <div class="back-chip" role="button">‹ BACK</div>
-    <header class="screen-head"><div class="eyebrow">SELECT A CHAMBER</div><h2>CHAPTER SELECT</h2></header>
+    <header class="screen-head"><div class="eyebrow">SELECT A DECK</div><h2>CHAPTER SELECT</h2></header>
     <div class="cards"></div>
     <div class="corner corner-right"><b>ARROWS</b> SELECT &nbsp;&nbsp; <b>ENTER</b> PLAY &nbsp;&nbsp; <b>ESC</b> BACK</div>`, {
     grid: true, dim: true,
@@ -222,7 +222,7 @@ function buildChapters() {
         const locked = i + 1 > progress.unlocked;
         const best = progress.best[i];
         const card = h(`<div class="card${locked ? ' disabled locked' : ''}${best != null ? ' solved' : ''}" data-nav>
-          <div class="card-num">${pad(i + 1)}</div><div class="card-kicker">CHAMBER</div>
+          <div class="card-num">${pad(i + 1)}</div><div class="card-kicker">DECK</div>
           <div class="card-name">${locked ? '— — —' : lv.name}</div>
           <div class="card-foot">${locked ? '<span class="lock"></span> LOCKED' : best != null ? `BEST <b>${best}</b> TURNS` : 'UNSOLVED'}</div></div>`);
         card.onActivate = () => startLevel(i);
@@ -245,10 +245,10 @@ function buildSettings() {
           <dt>ARROWS / WASD</dt><dd>Move both elements</dd>
           <dt>Q &nbsp;/&nbsp; E</dt><dd>Rotate camera</dd>
           <dt>Z</dt><dd>Undo</dd>
-          <dt>R</dt><dd>Restart chamber</dd>
+          <dt>R</dt><dd>Restart deck</dd>
           <dt>M</dt><dd>Mute</dd>
           <dt>ESC</dt><dd>Pause</dd>
-          <dt>ENTER</dt><dd>Next chamber / confirm</dd>
+          <dt>ENTER</dt><dd>Next deck / confirm</dd>
         </dl>
       </div>
     </div>
@@ -273,7 +273,7 @@ function buildSettings() {
       try { if (v && !fs()) document.documentElement.requestFullscreen?.(); else if (!v && fs()) document.exitFullscreen?.(); } catch { /* blocked */ }
     }),
     group('DATA'),
-    button('RESET PROGRESS', () => askConfirm('RESET ALL PROGRESS?', 'Unlocked chambers and best turns will be erased.', 'RESET', () => {
+    button('RESET PROGRESS', () => askConfirm('RESET ALL PROGRESS?', 'Unlocked decks and best turns will be erased.', 'RESET', () => {
       resetProgress();
     }), { cls: 'danger small' }),
     button('BACK', () => close(), { cls: 'small' }),
@@ -307,12 +307,12 @@ function buildPause() {
     onBack: () => resume(),
     onOpen: () => {
       const info = api.levelInfo();
-      pause.el.querySelector('.pause-chamber').textContent = `CHAMBER ${pad(info.index + 1)} · ${info.name.toUpperCase()}`;
+      pause.el.querySelector('.pause-chamber').textContent = `DECK ${pad(info.index + 1)} · ${info.name.toUpperCase()}`;
     },
   });
   pause.el.querySelector('.menu-list').append(
     button('RESUME', () => resume()),
-    button('RESTART CHAMBER', () => { close(false); api.restart(); }),
+    button('RESTART DECK', () => { close(false); api.restart(); }),
     button('SETTINGS', () => open(settingsScreen)),
     button('MAIN MENU', () => showMainMenu()),
   );
@@ -322,10 +322,10 @@ function buildEnd() {
   end = makeScreen('screen-end panel-screen', `
     <div class="menu-shade full warm"></div>
     <div class="end-wrap">
-      <div class="eyebrow">CORE INTEGRITY 100%</div>
-      <h2 class="end-title">THE SHIP AWAKENS</h2>
-      <p class="end-text">Sol and Cryo are one again. The Crucible roars back to life,<br>and the Meridian's engines burn bright against the dark.</p>
-      <div class="stats"><div><b class="st-ch"></b><span>CHAMBERS STABILISED</span></div><div><b class="st-turns"></b><span>TOTAL TURNS</span></div></div>
+      <div class="eyebrow">ALL DECKS ONLINE</div>
+      <h2 class="end-title">THE BOND HOLDS</h2>
+      <p class="end-text">At the heart of the ship, Sol and Cryo fuse, and this time they stay as one.<br>The reactor roars back to life, and the Meridian wakes.</p>
+      <div class="stats"><div><b class="st-ch"></b><span>DECKS RELIT</span></div><div><b class="st-turns"></b><span>TOTAL TURNS</span></div></div>
       <nav class="menu-list center"></nav>
     </div>`, { onBack: () => showMainMenu() });
   end.el.querySelector('.menu-list').append(button('MAIN MENU', () => showMainMenu()));

@@ -2,6 +2,7 @@
 //   .  air        ^ hot vent (boils to gas → rises)   v cold vent (gas condenses → falls)
 //   #  warm block c cold block   h hot block   = grate (solids stand, liquid/gas pass)
 //   X  crucible (2)   B crate   S Sol   C Cryo
+//   q / p / P  thermal plate starting cold / warm / hot (copper; Sol leaving heats it, Cryo leaving cools it)
 //
 // Camera faces NORTH (from the south-east). Row 0 = back, last row = front.
 // Readability rules: see LEVEL_DESIGN.md. Run tools/solve3d.html after editing.
@@ -9,7 +10,7 @@
 export const LEVELS = [
   {
     name: 'Ignition',
-    intro: 'Core fracture detected. Both elements obey the same command. Use the edges to line them up over the Crucible.',
+    intro: 'Deck 1, ignition chamber. Both elements answer the same command. Use the walls to line them up over the Crucible.',
     heat: 13, mass: 13,
     layers: [
       [ // z0: floor, one hole into the void
@@ -30,7 +31,7 @@ export const LEVELS = [
   },
   {
     name: 'Updraft',
-    intro: 'The Crucible is on the upper deck. Hot vents lift anything as gas. Cryo boils on hot plating; Sol is too dense.',
+    intro: 'The Deck 2 Crucible sits up on the terrace. Hot vents lift anything as gas. Cryo boils on hot plating; Sol is too dense.',
     heat: 14, mass: 16,
     layers: [
       [ // z0: floor
@@ -61,7 +62,7 @@ export const LEVELS = [
   },
   {
     name: 'Grate Fence',
-    intro: 'A grate fence. Liquid Cryo slips straight through; solid Sol must go around.',
+    intro: 'Coolant grates divide Deck 3. Liquid Cryo slips straight through; solid Sol must find a way around.',
     heat: 14, mass: 14,
     layers: [
       [ // z0: floor, crucible on the west side
@@ -82,7 +83,7 @@ export const LEVELS = [
   },
   {
     name: 'Load Bearing',
-    intro: 'A trench blocks the vent. Only a solid can push the crate in as a bridge. Cryo has another way up.',
+    intro: 'Deck 4 cargo bay. A trench blocks the vent, and only a solid can push the crate in as a bridge.',
     heat: 21, mass: 30,
     layers: [
       [ // z0: base
@@ -121,7 +122,7 @@ export const LEVELS = [
   },
   {
     name: 'Condensation',
-    intro: 'The deck below holds the Crucible. Liquid slips through the grate balcony. Solids stand on it, then step off the edge.',
+    intro: 'The Deck 5 Crucible is one level down. Liquid drips through the grate balcony; solids stand on it.',
     heat: 13, mass: 13,
     layers: [
       [ // z0: terrace base (back), crucible deck (front right), void (front left)
@@ -160,7 +161,7 @@ export const LEVELS = [
   },
   {
     name: 'Cold Shoulder',
-    intro: 'Cold plating freezes Sol solid. Cryo hardens on it too, and a solid Cryo can shove a frozen Sol.',
+    intro: 'Deck 6 cold storage. Cold plating freezes Sol in place, but a solid Cryo can shove it along.',
     heat: 13, mass: 13,
     layers: [
       [ // z0: back deck, a cold bridge running toward you over the void, front deck with the Crucible
@@ -184,8 +185,64 @@ export const LEVELS = [
     ],
   },
   {
+    name: 'Afterburn',
+    intro: 'Deck 7 is lined with copper plates that hold heat. Every plate Sol leaves burns hotter. Let Cryo follow in its wake.',
+    heat: 18, mass: 22,
+    layers: [
+      [ // z0: crucible room at the back, grate bridge over the void in the wall gap, two plates in front
+        '##XX###',
+        '#######',
+        '###=###',
+        '#######',
+        '#pp####',
+        '#######',
+      ],
+      [ // z1: wall with one gap: solid Sol walks the grate, liquid Cryo would drip through it
+        '.......',
+        '.......',
+        '###.###',
+        '.......',
+        '.......',
+        '.S...C.',
+      ],
+      [ // z2: gas drifts over the wall and condenses on the cold vents
+        '.......',
+        'vvvvvvv',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+      ],
+    ],
+  },
+  {
+    name: 'Frostbite',
+    intro: 'More copper plating. Every plate Cryo leaves turns colder. Lead with Cryo, and Sol freezes where it steps.',
+    heat: 13, mass: 13,
+    layers: [
+      [ // z0: platform ringed by void, plates in the middle
+        '........',
+        '.######.',
+        '.#pppp#.',
+        '.#pppp#.',
+        '.######.',
+        '.##XX##.',
+        '........',
+      ],
+      [ // z1
+        '........',
+        '..S.....',
+        '....C...',
+        '........',
+        '........',
+        '........',
+        '........',
+      ],
+    ],
+  },
+  {
     name: 'Stepping Stone',
-    intro: 'No heat reaches Cryo up here, except Sol itself. Rest on Sol to boil. Only a solid can cross the grate to the vent.',
+    intro: 'No heat reaches Cryo on Deck 9, except Sol itself. Rest on Sol to boil. Only a solid can cross the grate.',
     heat: 18, mass: 19,
     layers: [
       [ // z0: terrace base, Cryo's deck (left), void, Sol's corridor with a grate bridge over the void
@@ -220,7 +277,7 @@ export const LEVELS = [
   },
   {
     name: 'Brink',
-    intro: 'Push the crate into the pit and it holds. Push it off the edge and it is gone. Mind your footing.',
+    intro: 'The Deck 10 hull is breached. A crate in the pit holds; a crate off the edge is gone. Mind your footing.',
     heat: 18, mass: 18,
     layers: [
       [ // z0: base (pit floor), void ring
@@ -253,8 +310,55 @@ export const LEVELS = [
     ],
   },
   {
+    name: 'Relay',
+    intro: 'Deck 11 relay. Sol warms the path for Cryo; Cryo cools it for Sol. You will have to take turns leading.',
+    heat: 31, mass: 40,
+    layers: [
+      [ // z0: front floor with plates; grate bridge over the void leads to the hot vent
+        '.......',
+        '.#####.',
+        '.#####.',
+        '.#####.',
+        '#####=.',
+        '#pp###.',
+        '#######',
+        '#######',
+      ],
+      [ // z1: raised deck at the back (ringed by void) with the crucible and plates; hot vent on the right
+        '.......',
+        '.#XXp#.',
+        '.#ppp#.',
+        '.#####.',
+        '......^',
+        '.......',
+        '.......',
+        '.S...C.',
+      ],
+      [ // z2: deck standing level
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+      ],
+      [ // z3: gas drifts here; cold vents over the deck edge bring it down
+        '.......',
+        '.......',
+        '.......',
+        '.vvvvv.',
+        '.......',
+        '.......',
+        '.......',
+        '.......',
+      ],
+    ],
+  },
+  {
     name: 'Binary Core',
-    intro: 'Final chamber. Bridge the pit, boil Cryo on Sol, cross the grate, ride the vent. Stay close; mass is critical.',
+    intro: 'The main core. Every deck is lit, and only this fusion can hold. Bridge, boil, cross, rise. Stay close.',
     heat: 32, mass: 14,
     layers: [
       [ // z0: base; grate bridge in the front corridor over the void

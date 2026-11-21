@@ -135,7 +135,7 @@ function loadLevel(i) {
   hideOverlay();
   fitCamera();
   snapToState();
-  $('chamber').textContent = `CHAMBER ${i + 1} / ${LEVELS.length}`;
+  $('chamber').textContent = `DECK ${i + 1} / ${LEVELS.length}`;
   $('level-name').textContent = LEVELS[i].name.toUpperCase();
   $('intro').textContent = LEVELS[i].intro ?? '';
   if (mode === 'game') sfx(`vo_${i + 1}`, 1);
@@ -163,6 +163,7 @@ function snapToState() {
     worldPos(b, o.position).y += 0.5;
   }
   tetherOn = !state.sol.fallen && !state.cryo.fallen && adjacent(state.sol, state.cryo);
+  world.setPlateTemps(state.plates);
   alloy.visible = false;
   busyUntil = 0;
   refreshHud();
@@ -347,12 +348,14 @@ function animate(events) {
   const crateClock = {};
   let stepSound = false;
   let end = 0;
+  let lastLeave = 0; // when the most recent element started leaving a cell (plates react then)
   const target = new THREE.Vector3();
 
   for (const ev of events) {
     switch (ev.type) {
       case 'move': {
         const t0 = clock[ev.who];
+        lastLeave = t0;
         worldPos(ev.to, target);
         tween(disp[ev.who], { x: target.x, y: target.y, z: target.z }, { delay: t0, dur: 140, e: 'out' });
         clock[ev.who] = t0 + 140;
@@ -362,6 +365,7 @@ function animate(events) {
       case 'fall':
       case 'rise': {
         const t0 = clock[ev.who];
+        lastLeave = t0;
         const dist = Math.abs(ev.to.z - ev.from.z);
         const dur = ev.type === 'fall' ? 110 + 90 * dist : 220 + 180 * dist;
         worldPos(ev.to, target);
@@ -410,6 +414,19 @@ function animate(events) {
         break;
       }
       case 'shove': sfx('push', 0.5); break;
+      case 'plate': {
+        // A plate remembers heat: Sol leaving warms it, Cryo leaving chills it.
+        const key = `${ev.x},${ev.y},${ev.z}`;
+        const heating = ev.to > ev.from;
+        after(lastLeave + 70, () => {
+          if (!world.animatePlate(key, ev.to)) return;
+          const p = cellToWorld(level, ev.x, ev.y, ev.z, new THREE.Vector3());
+          p.y = ev.z + 1.02;
+          bursts.burst(p, heating ? 0xff8a3d : 0xcff6ff, Math.round(14 * PFX), heating ? 1.1 : 0.9);
+          sfx(heating ? 'melt' : 'freeze', 0.22);
+        });
+        break;
+      }
       case 'void': {
         const t0 = clock[ev.who];
         tween(fx[ev.who], { scale: 0 }, { delay: Math.max(0, t0 - 400), dur: 450, e: 'in' });
@@ -525,8 +542,10 @@ function celebrate() {
       sfx('vo_end', 1);
       if (!SHOT) { ui.showEnd({ chambers: LEVELS.length, turns: runTurns }); return; }
     }
-    showOverlay(last ? 'THE SHIP AWAKENS' : 'CORE STABILISED',
-      last ? 'THANKS FOR PLAYING' : (isTouch() ? 'TAP TO CONTINUE' : 'PRESS ENTER FOR NEXT CHAMBER'), 'var(--gold)');
+    // Lore: each chamber's Crucible relights one deck; the surge throws them into the next.
+    showOverlay(last ? 'THE BOND HOLDS' : `DECK ${levelIndex + 1} ONLINE`,
+      last ? 'THANKS FOR PLAYING'
+        : `THE SURGE THROWS THEM APART  ·  ${isTouch() ? 'TAP TO CONTINUE' : 'ENTER: NEXT DECK'}`, 'var(--gold)');
   });
 }
 

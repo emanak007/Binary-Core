@@ -6,7 +6,8 @@ const DIR_NAMES = Object.keys(DIRS);
 function key(s, ignoreMass) {
   const e = (p) => `${p.x},${p.y},${p.z},${p.st},${ignoreMass ? '' : p.mass},${p.fallen ? 1 : 0}`;
   const blocks = s.blocks.map((b) => `${b.x},${b.y},${b.z}`).sort().join(';');
-  return `${e(s.sol)}|${e(s.cryo)}|${blocks}`;
+  const plates = Object.values(s.plates ?? {}).join('');
+  return `${e(s.sol)}|${e(s.cryo)}|${blocks}|${plates}`;
 }
 
 // ignoreMass: only safe when mass can't run out (used for the 'true minimum' check).

@@ -27,6 +27,14 @@ The camera looks **north**, from the south-east (`YAW0 = 32°`). In `src3d/level
 - **Stacking boils or freezes within a single turn.** Cryo landing on Sol becomes gas and floats off in the same move, so the stacked position never shows up in a saved state. Check for the boil event, not the position.
 - **Single-file crossings need a way to line up.** Two elements moving together only change their relative position when something blocks one of them (a pillar, a wall, the map edge, a frozen Sol, a crate). Give every level at least one such blocker where alignment matters.
 
+## Thermal plates (`q` / `p` / `P`)
+- A plate remembers heat. **Sol leaving** a plate heats it one step; **Cryo leaving** cools it one step. Falling, rising and being shoved off a plate count too.
+- **Order is the puzzle.** Sol leading leaves hot plates, so Cryo following boils. Cryo leading leaves cold plates, so Sol following freezes.
+- **A follower doesn't need to be directly behind.** A plate keeps its temperature until someone leaves it, so stepping on it any later turn works too. You can boil Cryo in any open room; plates don't line the elements up.
+- **To force a freeze or shove, remove every other way to line them up:** ring the area with void, and make the only way in one-way (a vent up to a void-ringed deck).
+- **Cryo standing directly on a cold plate turns solid** and can cross a grate. Keep plates away from grate approaches unless that's the trick.
+- To prove a level needs plates, solve it with `OPTIONS.plateTrails = false` (or `'sol'` / `'cryo'` for one element's trail only) from `src3d/rules.js`.
+
 ## Workflow
 Edit `src3d/levels.js`, then open `tools/solve3d.html` and check every level says it can be solved. Replay the path with
 `3d.html?level=N&shot&play=<path>` and check the screenshot from the default view.

@@ -17,8 +17,8 @@ export const CUTSCENES = {
     { image: 'assets/cutscenes/intro_04.png', voice: 'vo_intro_04', duration: 6, art: 'apart',
       text: 'Apart, they cannot last. Sol burns away. Cryo boils into nothing.' },
     { image: 'assets/cutscenes/intro_05.png', voice: 'vo_intro_05', duration: 5.5, art: 'crucible',
-      text: 'The Crucible still holds its heat. But not for long.' },
+      text: 'Its reactor runs through a chain of Crucibles, one on every deck. Each one is cooling.' },
     { image: 'assets/cutscenes/intro_06.png', voice: 'vo_intro_06', duration: 6, art: 'title', title: true,
-      text: 'Bring them back together.' },
+      text: 'Relight the reactor, deck by deck. Bring them together, as many times as it takes.' },
   ],
 };

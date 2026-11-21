@@ -89,3 +89,16 @@ export const adjacent = (a, b) => boolean // 3D Manhattan == 1
 - `3d.html`, `src3d/game.js`, `src3d/audio.js`, `src3d/hud.css` (optional): renderer agent
 - Three.js `0.160.0` via importmap from `https://cdn.jsdelivr.net/npm/three@0.160.0/` (core + `examples/jsm/` addons).
 - Assets: same `assets/` folders; textures `assets/tiles/{warm,cold,hot,wall,grate,crucible}.png` used on cube faces when present.
+
+## Addendum: Thermal Plates
+New block chars: `q` cold plate, `p` warm plate, `P` hot plate (copper plates that **remember heat**).
+- A plate is a normal solid block whose temperature is dynamic. Its current temperature lives in
+  `state.plates`: an object `{ "x,y,z": 0|1|2 }` with an entry for every plate (0 cold, 1 warm, 2 hot).
+  `level.cells` keeps the original char; renderer and rules read the live temperature from `state.plates`.
+- **Trail rule:** whenever an element's position changes (horizontal move, shove, fall or rise) and the cell
+  directly below its OLD position is a plate, that plate shifts one step: **Sol leaving: +1 (max 2), Cryo leaving: -1 (min 0)**.
+  Apply it immediately at the moment of leaving, so a follower stepping onto the same plate later in the same turn
+  (and the settle pass) sees the new temperature. That is the core puzzle: whoever walks first sets the follower's state.
+- Plate temperature works exactly like `c`/`#`/`h` for states (resting on it).
+- Event: `{type:'plate', x, y, z, from, to}` emitted when a plate changes (after the triggering move event).
+- Solver state key must include plate temperatures.

@@ -6,6 +6,8 @@
 //    (a 'c' block or Cryo). Warm/hot floors under a ceiling don't condense it, so gas can drift
 //    along ceilings and cold vents matter.
 //  - Crates falling below z=0 are removed; their 'blockfall' event has to.z === -1.
+//  - Thermal plates (q/p/P): live temperature in state.plates["x,y,z"]. Leaving the cell directly
+//    above a plate shifts it (Sol +1, Cryo -1) immediately, so a follower sees the new temperature.
 
 export const DIRS = {
   north: { x: 0, y: -1 }, south: { x: 0, y: 1 }, east: { x: 1, y: 0 }, west: { x: -1, y: 0 },
@@ -19,7 +21,11 @@ const STATE_BY_TEMP = {
   cryo: [STATE.SOLID, STATE.LIQUID, STATE.GAS],
   sol: [STATE.FROZEN, STATE.SOLID, STATE.LIQUID],
 };
-const STATIC_CHARS = new Set(['.', '^', 'v', '#', 'c', 'h', '=', 'X']);
+const PLATE_TEMP = { q: 0, p: 1, P: 2 };
+const STATIC_CHARS = new Set(['.', '^', 'v', '#', 'c', 'h', '=', 'X', 'q', 'p', 'P']);
+// Test/solver hook: OPTIONS.plateTrails = false disables trails ('sol' / 'cryo' = only that element's
+// trail) — used to prove a level needs the plate mechanic.
+export const OPTIONS = { plateTrails: true };
 
 export const adjacent = (a, b) =>
   Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + Math.abs(a.z - b.z) === 1;
@@ -31,6 +37,7 @@ export function parseLevel(def) {
   const w = Math.max(...layers[0].map((r) => r.length));
   const cells = [];
   const blocks = [];
+  const plates = {};
   let sol = null, cryo = null, crucibles = 0;
   for (let z = 0; z < h; z++) {
     const layer = [];
@@ -41,7 +48,11 @@ export function parseLevel(def) {
         if (ch === 'S') { sol = { x, y, z }; row.push('.'); }
         else if (ch === 'C') { cryo = { x, y, z }; row.push('.'); }
         else if (ch === 'B') { blocks.push({ id: blocks.length, x, y, z }); row.push('.'); }
-        else if (STATIC_CHARS.has(ch)) { row.push(ch); if (ch === 'X') crucibles++; }
+        else if (STATIC_CHARS.has(ch)) {
+          row.push(ch);
+          if (ch === 'X') crucibles++;
+          if (ch in PLATE_TEMP) plates[`${x},${y},${z}`] = PLATE_TEMP[ch];
+        }
         else throw new Error(`Level "${def.name}": unknown char '${ch}' at ${x},${y},${z}`);
       }
       layer.push(row);
@@ -56,7 +67,7 @@ export function parseLevel(def) {
     ...p, mass: def.mass, fallen: false, st: kind === 'sol' ? STATE.SOLID : STATE.LIQUID,
   });
   const state = {
-    sol: mk('sol', sol), cryo: mk('cryo', cryo), blocks,
+    sol: mk('sol', sol), cryo: mk('cryo', cryo), blocks, plates,
     heat: def.heat, turn: 0, status: 'play', reason: null,
   };
   settle(level, state, []); // starting states come from the floor they stand on
@@ -84,7 +95,23 @@ function supportTemp(level, s, who) {
   const below = elementAt(s, e.x, e.y, e.z - 1);
   if (below) return below === 'sol' ? 2 : 0;
   if (blockAt(s, e.x, e.y, e.z - 1) >= 0) return 1;
+  const plate = s.plates[`${e.x},${e.y},${e.z - 1}`];
+  if (plate !== undefined) return plate;
   return TEMP[cellAt(level, e.x, e.y, e.z - 1)];
+}
+
+// Thermal trail: the element just left `from`; shift the plate directly below it.
+// Returns the plate event (caller decides when to emit it, always after the move event).
+function leavePlate(s, who, from) {
+  const tr = OPTIONS.plateTrails;
+  if (!tr || (tr !== true && tr !== who)) return null;
+  const k = `${from.x},${from.y},${from.z - 1}`;
+  const t = s.plates[k];
+  if (t === undefined) return null;
+  const next = Math.max(0, Math.min(2, t + (who === 'sol' ? 1 : -1)));
+  if (next === t) return null;
+  s.plates[k] = next;
+  return { type: 'plate', x: from.x, y: from.y, z: from.z - 1, from: t, to: next };
 }
 
 function setState(s, who, next, events) {
@@ -151,6 +178,8 @@ function moveElement(level, s, who, d, events) {
     const from = pos(o);
     o.x = nx; o.y = ny;
     events.push({ type: 'move', who: other, from, to: pos(o) });
+    const pe = leavePlate(s, other, from);
+    if (pe) events.push(pe);
   }
 
   const bi = blockAt(s, tx, ty, tz);
@@ -166,17 +195,27 @@ function moveElement(level, s, who, d, events) {
   const from = pos(e);
   e.x = tx; e.y = ty;
   events.push({ type: 'move', who, from, to: pos(e) });
+  const pe = leavePlate(s, who, from);
+  if (pe) events.push(pe);
 }
 
 // Gravity, buoyancy, vents and floor temperature until nothing changes.
 function settle(level, s, events) {
   const runs = {}; // merge consecutive 1-cell vertical steps into one fall/rise event
-  const flush = (key) => { if (runs[key]) { events.push(runs[key]); delete runs[key]; } };
+  const after = {}; // plate events waiting for their fall/rise run to be emitted first
+  const flush = (key) => {
+    if (runs[key]) { events.push(runs[key]); delete runs[key]; }
+    if (after[key]) { events.push(...after[key]); delete after[key]; }
+  };
   const vstep = (key, base, type, from, to) => {
     const r = runs[key];
     if (r && r.type === type) { r.to = to; return; }
     flush(key);
     runs[key] = { ...base, type, from, to };
+  };
+  const trail = (who, from) => {
+    const pe = leavePlate(s, who, from);
+    if (pe) (after[who] ??= []).push(pe);
   };
 
   const cap = 4 * level.h + 8;
@@ -207,6 +246,7 @@ function settle(level, s, events) {
         if (passable(ch, e.st) && !occupied(s, e.x, e.y, e.z + 1)) {
           const from = pos(e); e.z += 1; changed = true;
           vstep(who, { who }, 'rise', from, pos(e));
+          trail(who, from);
           continue;
         }
       } else {
@@ -214,6 +254,7 @@ function settle(level, s, events) {
         if (passable(ch, e.st) && !occupied(s, e.x, e.y, e.z - 1)) {
           const from = pos(e); e.z -= 1; changed = true;
           vstep(who, { who }, 'fall', from, pos(e));
+          trail(who, from);
           if (e.z < 0) {
             flush(who);
             e.fallen = true;

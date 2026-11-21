@@ -165,6 +165,152 @@ function makeStars(radius) {
   return new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x8a96b8, size: 0.05, transparent: true, opacity: 0.7, depthWrite: false }));
 }
 
+// ---------- thermal plates ----------
+// Copper plates that remember heat. Each plate owns its material so it can show its own
+// temperature; the visual temperature is a float that lerps toward the rules' value.
+
+const PLATE_CHARS = { q: 0, p: 1, P: 2 };
+const PLATE_LOOK = [ // per temperature: surface colour, glow colour, glow strength
+  { color: new THREE.Color(0x9fd6ea), glow: new THREE.Color(0x5ee7ff), k: 1.1 },
+  { color: new THREE.Color(0xe09a62), glow: new THREE.Color(0xffa766), k: 0.32 },
+  { color: new THREE.Color(0xff8a4a), glow: new THREE.Color(0xff5a1f), k: 1.6 },
+];
+const plateSlabGeo = new RoundedBoxGeometry(0.9, 0.1, 0.9, 2, 0.03);
+const plateRingGeo = new THREE.RingGeometry(0.3, 0.42, 36);
+let plateTextures = null;
+
+function makePlateTextures() {
+  if (plateTextures) return plateTextures;
+  const N = 256;
+  const draw = (glow) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = N;
+    const g = c.getContext('2d');
+    if (glow) { g.fillStyle = '#000'; g.fillRect(0, 0, N, N); }
+    else {
+      const grad = g.createLinearGradient(0, 0, N, N);
+      grad.addColorStop(0, '#e6e6e6'); grad.addColorStop(0.5, '#c8c8c8'); grad.addColorStop(1, '#dadada');
+      g.fillStyle = grad; g.fillRect(0, 0, N, N);
+      for (let i = 0; i < 900; i++) { // brushed-metal speckle
+        g.fillStyle = `rgba(0,0,0,${Math.random() * 0.06})`;
+        g.fillRect(Math.random() * N, Math.random() * N, 1 + Math.random() * 6, 1);
+      }
+    }
+    // Etched hex grid.
+    const r = 22, hw = Math.sqrt(3) * r;
+    g.strokeStyle = glow ? '#ffffff' : 'rgba(40,20,10,0.55)';
+    g.lineWidth = glow ? 2.2 : 3;
+    for (let row = -1; row < N / (r * 1.5) + 1; row++) {
+      for (let col = -1; col < N / hw + 1; col++) {
+        const cx = col * hw + (row % 2 ? hw / 2 : 0), cy = row * r * 1.5;
+        g.beginPath();
+        for (let k = 0; k < 6; k++) {
+          const a = Math.PI / 6 + (k * Math.PI) / 3;
+          const px = cx + r * Math.cos(a), py = cy + r * Math.sin(a);
+          if (k === 0) g.moveTo(px, py); else g.lineTo(px, py);
+        }
+        g.closePath(); g.stroke();
+      }
+    }
+    // Rim and centre sigil so a plate reads as a "device", not a floor tile.
+    g.lineWidth = glow ? 4 : 6;
+    g.strokeRect(8, 8, N - 16, N - 16);
+    g.beginPath(); g.arc(N / 2, N / 2, 34, 0, Math.PI * 2); g.stroke();
+    if (glow) { g.fillStyle = '#fff'; g.beginPath(); g.arc(N / 2, N / 2, 10, 0, Math.PI * 2); g.fill(); }
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = glow ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    return tex;
+  };
+  plateTextures = { map: draw(false), glow: draw(true) };
+  return plateTextures;
+}
+
+function makePlate(m, temp) {
+  const tex = makePlateTextures();
+  const obj = new THREE.Group();
+  const baseMat = m['#'].clone();
+  baseMat.color.multiplyScalar(0.75);
+  const base = new THREE.Mesh(blockGeo, baseMat);
+  base.castShadow = base.receiveShadow = true;
+  const slabMat = new THREE.MeshStandardMaterial({
+    color: 0xe09a62, metalness: 0.45, roughness: 0.38, map: tex.map,
+    emissive: 0xffffff, emissiveMap: tex.glow, emissiveIntensity: 0.1,
+  });
+  const slab = new THREE.Mesh(plateSlabGeo, slabMat);
+  slab.position.y = 0.47;
+  slab.castShadow = slab.receiveShadow = true;
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const ring = new THREE.Mesh(plateRingGeo, ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.53;
+  ring.visible = false;
+  obj.add(base, slab, ring);
+  const h = { obj, slabMat, baseMat, ring, ringMat, t: temp, anim: null, pulse: 0, pulseColor: new THREE.Color(), faded: false };
+  applyPlateLook(h);
+  return h;
+}
+
+const _c1 = new THREE.Color(), _c2 = new THREE.Color();
+function applyPlateLook(h) {
+  const t = Math.max(0, Math.min(2, h.t));
+  const i = Math.min(1, Math.floor(t)), f = t - i;
+  const a = PLATE_LOOK[i], b = PLATE_LOOK[i + 1];
+  h.slabMat.color.copy(_c1.copy(a.color).lerp(b.color, f));
+  h.slabMat.emissive.copy(_c2.copy(a.glow).lerp(b.glow, f));
+  h.slabMat.emissiveIntensity = a.k + (b.k - a.k) * f;
+  h.slabMat.roughness = t < 1 ? 0.22 + 0.16 * t : 0.38;
+}
+
+// One shared point cloud for frost sparkles (cold plates) and rising embers (hot plates).
+function makePlateSparkles(handles) {
+  const PER = 6;
+  const n = Math.max(1, handles.length * PER);
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const seeds = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { seeds[i * 3] = Math.random() - 0.5; seeds[i * 3 + 1] = Math.random() - 0.5; seeds[i * 3 + 2] = Math.random(); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.07, vertexColors: true, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  }));
+  pts.frustumCulled = false;
+  pts.visible = handles.length > 0;
+  pts.userData.update = (time) => {
+    for (let hi = 0; hi < handles.length; hi++) {
+      const h = handles[hi];
+      const cold = Math.max(0, 1 - h.t), hot = Math.max(0, h.t - 1);
+      const fade = h.faded ? 0.15 : 1;
+      const ox = h.obj.position.x, oy = h.obj.position.y + 0.53, oz = h.obj.position.z;
+      for (let k = 0; k < PER; k++) {
+        const i = hi * PER + k, sx = seeds[i * 3], sz = seeds[i * 3 + 1], so = seeds[i * 3 + 2];
+        let y = oy, br = 0, r = 0, g = 0, b = 0;
+        if (hot >= cold) {
+          const f = (so + time * (0.35 + so * 0.3)) % 1; // ember rising and fading
+          y = oy + f * 0.75;
+          br = hot * (1 - f) * fade;
+          r = 1; g = 0.45; b = 0.12;
+        } else {
+          const tw = Math.max(0, Math.sin(time * (2.2 + so * 2) + so * 40)); // frost twinkle
+          y = oy + 0.02 + so * 0.06;
+          br = cold * tw * tw * tw * tw * fade;
+          r = 0.75; g = 0.95; b = 1;
+        }
+        pos[i * 3] = ox + sx * 0.8; pos[i * 3 + 1] = y; pos[i * 3 + 2] = oz + sz * 0.8;
+        col[i * 3] = r * br; col[i * 3 + 1] = g * br; col[i * 3 + 2] = b * br;
+      }
+    }
+    geo.attributes.position.needsUpdate = true;
+    geo.attributes.color.needsUpdate = true;
+  };
+  return pts;
+}
+
 // Builds every static cell of a level. Returns handles the game updates each frame.
 export function buildLevel(level, m) {
   const group = new THREE.Group();
@@ -172,6 +318,7 @@ export function buildLevel(level, m) {
   const vents = [];
   const hotMats = [];
   const crucibles = [];
+  const plates = new Map(); // "x,y,z" -> plate handle
   const tmp = new THREE.Vector3();
 
   for (let z = 0; z < level.h; z++) for (let y = 0; y < level.d; y++) for (let x = 0; x < level.w; x++) {
@@ -184,6 +331,11 @@ export function buildLevel(level, m) {
       mesh.castShadow = mesh.receiveShadow = true;
       obj.add(mesh);
       if (ch === 'c' || ch === 'h') obj.add(new THREE.LineSegments(edgeGeo, ch === 'c' ? m.coldEdge : m.hotEdge));
+    } else if (ch in PLATE_CHARS) {
+      const h = makePlate(m, PLATE_CHARS[ch]);
+      plates.set(`${x},${y},${z}`, h);
+      obj = h.obj;
+      obj.userData.plate = h;
     } else if (ch === '=') {
       obj = makeGrate(m['=']);
     } else if (ch === 'X') {
@@ -200,7 +352,7 @@ export function buildLevel(level, m) {
     obj.position.copy(tmp).setY(z + 0.5);
     obj.userData.kind = ch;
     group.add(obj);
-    blocks.push({ obj, z, kind: ch, faded: false });
+    blocks.push({ obj, z, kind: ch, faded: false, plate: obj.userData.plate ?? null });
   }
 
   // Crucible light: intensity follows the heat fraction.
@@ -216,10 +368,54 @@ export function buildLevel(level, m) {
   const span = Math.max(level.w, level.d);
   group.add(makeStars(span * 1.4));
   const holes = buildHoleRims(level, group);
+  const plateList = [...plates.values()];
+  const sparkles = makePlateSparkles(plateList);
+  group.add(sparkles);
+  let clock = 0; // seconds, from update(t)
 
   return {
     group, blocks,
+    plates,
+    // Snap every plate to the rules' temperatures (level load, undo, restart).
+    setPlateTemps(temps) {
+      for (const [key, h] of plates) {
+        const v = temps?.[key];
+        if (v === undefined) continue;
+        h.t = v; h.anim = null; h.pulse = 0; h.ring.visible = false;
+        applyPlateLook(h);
+      }
+    },
+    // Animate one plate to a new temperature (~350ms) with a pulse ring.
+    animatePlate(key, to) {
+      const h = plates.get(key);
+      if (!h) return null;
+      h.anim = { from: h.t, to, start: clock, dur: 0.35 };
+      h.pulse = 1;
+      h.pulseColor.copy(PLATE_LOOK[Math.max(0, Math.min(2, to))].glow);
+      return h;
+    },
     update(t, heatFrac, state) {
+      clock = t;
+      for (const h of plateList) {
+        if (h.anim) {
+          const f = Math.min(1, (t - h.anim.start) / h.anim.dur);
+          const e = f < 0.5 ? 2 * f * f : 1 - Math.pow(-2 * f + 2, 2) / 2;
+          h.t = h.anim.from + (h.anim.to - h.anim.from) * e;
+          if (f >= 1) { h.t = h.anim.to; h.anim = null; }
+          applyPlateLook(h);
+        } else if (h.t > 1.5) {
+          h.slabMat.emissiveIntensity = PLATE_LOOK[2].k * (0.85 + 0.15 * Math.sin(t * 3 + h.obj.position.x)); // heat shimmer
+        }
+        if (h.pulse > 0) {
+          h.pulse = Math.max(0, h.pulse - 1 / 30); // ~0.5s at 60fps
+          const k = 1 - h.pulse;
+          h.ring.visible = h.pulse > 0;
+          h.ring.scale.setScalar(0.6 + 1.1 * k);
+          h.ringMat.color.copy(h.pulseColor);
+          h.ringMat.opacity = h.pulse * (h.faded ? 0.2 : 0.9);
+        }
+      }
+      sparkles.userData.update(t);
       for (const v of vents) v.userData.update(t);
       holes.mat.opacity = 0.55 + 0.35 * Math.sin(t * 3.2);
       holes.hazeMat.opacity = 0.025 + 0.012 * Math.sin(t * 3.2);
@@ -239,6 +435,14 @@ export function buildLevel(level, m) {
         const fade = shouldFade(b);
         if (fade === b.faded) continue;
         b.faded = fade;
+        if (b.plate) { // plates own their materials: fade them in place
+          b.plate.faded = fade;
+          for (const mat of [b.plate.slabMat, b.plate.baseMat]) {
+            mat.transparent = fade; mat.opacity = fade ? 0.13 : 1; mat.depthWrite = !fade; mat.needsUpdate = true;
+          }
+          b.obj.traverse((o) => { if (o.isMesh && o !== b.plate.ring) o.castShadow = !fade; });
+          continue;
+        }
         b.obj.traverse((o) => {
           if (o.isMesh) {
             const k = b.kind;
@@ -282,11 +486,15 @@ function buildHoleRims(level, group) {
       const key = `${nx},${ny},${z}`;
       if (!holes.has(key)) {
         const g = new THREE.Group();
-        const haze = new THREE.Mesh(hazeGeo, hazeMat);
-        haze.rotation.x = -Math.PI / 2;
-        cellToWorld(level, nx, ny, z, tmp);
-        haze.position.set(tmp.x, z - 0.02, tmp.z);
-        g.add(haze);
+        // Haze only for holes inside the level; on the outer ring of void it read as a pink floor.
+        const interior = nx > 0 && ny > 0 && nx < level.w - 1 && ny < level.d - 1;
+        if (interior) {
+          const haze = new THREE.Mesh(hazeGeo, hazeMat);
+          haze.rotation.x = -Math.PI / 2;
+          cellToWorld(level, nx, ny, z, tmp);
+          haze.position.set(tmp.x, z - 0.02, tmp.z);
+          g.add(haze);
+        }
         group.add(g);
         holes.set(key, { x: nx, y: ny, z, group: g });
       }
