@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0d0f14">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Binary Core 3D</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -13,14 +15,17 @@
       --sol: #ffa94d; --cryo: #5ee7ff; --heat: #ff8a3d; --danger: #ff4d5e; --gold: #ffd88a;
     }
     html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; color: var(--text);
-      font-family: Rajdhani, sans-serif; user-select: none; }
-    #view { position: fixed; inset: 0; }
+      font-family: Rajdhani, sans-serif; user-select: none; -webkit-user-select: none;
+      overscroll-behavior: none; touch-action: none; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
+    :root { --sat: env(safe-area-inset-top, 0px); --sar: env(safe-area-inset-right, 0px);
+      --sab: env(safe-area-inset-bottom, 0px); --sal: env(safe-area-inset-left, 0px); }
+    #view { position: fixed; inset: 0; touch-action: none; }
     #view canvas { display: block; }
     .hud { position: fixed; pointer-events: none; }
-    #hud-left { top: 24px; left: 36px; }
+    #hud-left { top: calc(24px + var(--sat)); left: calc(36px + var(--sal)); }
     #chamber { font-size: 15px; font-weight: 600; letter-spacing: 3px; color: var(--dim); }
     #level-name { font-size: 36px; font-weight: 700; letter-spacing: 2px; line-height: 1.05; }
-    #hud-right { top: 24px; right: 36px; width: 340px; text-align: right; }
+    #hud-right { top: calc(24px + var(--sat)); right: calc(36px + var(--sar)); width: 340px; text-align: right; }
     .label { font-size: 14px; font-weight: 700; letter-spacing: 3px; }
     #heat-label { color: var(--heat); }
     #heat-num { font-size: 22px; font-weight: 700; line-height: 1.1; }
@@ -32,7 +37,7 @@
     #mass .bar { height: 4px; }
     #sol-text { color: var(--sol); } #cryo-text { color: var(--cryo); }
     #sol-fill { background: var(--sol); } #cryo-fill { background: var(--cryo); }
-    #hud-bottom { bottom: 18px; left: 0; right: 0; text-align: center; padding: 0 16px; }
+    #hud-bottom { bottom: calc(18px + var(--sab)); left: 0; right: 0; text-align: center; padding: 0 16px; }
     #intro { font-size: 19px; font-weight: 500; color: var(--dim); max-width: 1000px; margin: 0 auto 10px; }
     #controls { font-size: 13px; font-weight: 700; letter-spacing: 2px; color: var(--faint); }
     #overlay, #title { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
@@ -49,13 +54,89 @@
     #title .press { margin-top: 70px; color: var(--gold); font-size: 26px; font-weight: 700; letter-spacing: 6px;
       animation: blink 1.6s ease-in-out infinite; }
     @keyframes blink { 50% { opacity: 0.25; } }
+    .hud, #overlay { transition: opacity 0.4s; }
+    body:not([data-mode="game"]) .hud, body:not([data-mode="game"]) #overlay { opacity: 0 !important; }
     #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; }
+    /* ---------- touch controls (shown on touch devices, in gameplay only) ---------- */
+    #touch { display: none; }
+    body.touch[data-mode="game"] #touch { display: block; }
+    body.touch #controls { display: none; }
+    #touch button { position: fixed; display: flex; align-items: center; justify-content: center; margin: 0; padding: 0;
+      border: 1px solid rgba(255,255,255,0.12); background: rgba(16,18,25,0.55); color: rgba(235,239,246,0.85);
+      font: 700 15px Rajdhani, sans-serif; letter-spacing: 2px; border-radius: 14px; touch-action: none;
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); box-shadow: 0 6px 18px rgba(0,0,0,0.35); z-index: 15; }
+    #touch button.down { background: rgba(255,169,77,0.32); border-color: rgba(255,169,77,0.7); color: #fff; transform: scale(0.96); }
+    #dpad { position: fixed; left: calc(16px + var(--sal)); bottom: calc(16px + var(--sab)); width: 186px; height: 186px; z-index: 15; }
+    #dpad button { width: 62px; height: 62px; font-size: 22px; }
+    #dpad [data-act="up"] { left: calc(16px + var(--sal) + 62px); bottom: calc(16px + var(--sab) + 124px); }
+    #dpad [data-act="left"] { left: calc(16px + var(--sal)); bottom: calc(16px + var(--sab) + 62px); }
+    #dpad [data-act="right"] { left: calc(16px + var(--sal) + 124px); bottom: calc(16px + var(--sab) + 62px); }
+    #dpad [data-act="down"] { left: calc(16px + var(--sal) + 62px); bottom: calc(16px + var(--sab)); }
+    #dpad::after { content: ''; position: absolute; left: 70px; top: 70px; width: 46px; height: 46px; border-radius: 50%;
+      background: radial-gradient(circle, rgba(255,169,77,0.25), transparent 70%); }
+    #tactions { position: fixed; right: calc(16px + var(--sar)); bottom: calc(16px + var(--sab)); width: 136px; height: 136px; z-index: 15; }
+    #tactions button { width: 62px; height: 62px; font-size: 24px; }
+    #tactions [data-act="rotl"] { right: calc(16px + var(--sar) + 74px); bottom: calc(16px + var(--sab) + 74px); }
+    #tactions [data-act="rotr"] { right: calc(16px + var(--sar)); bottom: calc(16px + var(--sab) + 74px); }
+    #tactions [data-act="restart"] { right: calc(16px + var(--sar) + 74px); bottom: calc(16px + var(--sab)); }
+    #tactions [data-act="undo"] { right: calc(16px + var(--sar)); bottom: calc(16px + var(--sab)); font-size: 14px;
+      background: rgba(255,169,77,0.16); border-color: rgba(255,169,77,0.45); }
+    #tpause { left: calc(12px + var(--sal)); top: calc(14px + var(--sat)); width: 48px !important; height: 48px !important; font-size: 14px !important; }
+    body.touch #hud-left { left: calc(72px + var(--sal)); top: calc(16px + var(--sat)); }
+    body.touch #hud-right { top: calc(16px + var(--sat)); right: calc(16px + var(--sar)); }
+    /* intro collapses to one tappable line on touch */
+    body.touch #hud-bottom { bottom: auto; top: calc(84px + var(--sat)); text-align: left; padding: 0 calc(16px + var(--sar)) 0 calc(16px + var(--sal)); }
+    body.touch #intro { pointer-events: auto; font-size: 15px; max-width: none; margin: 0; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; color: var(--dim); }
+    body.touch #intro::before { content: 'ⓘ  '; color: var(--sol); }
+    body.touch #intro.expanded { white-space: normal; background: rgba(10,12,17,0.82); padding: 8px 10px; border-radius: 8px; color: var(--text); }
+    body.touch #overlay.show { pointer-events: auto; }
+
+    /* ---------- small screens ---------- */
     @media (max-width: 760px) {
-      #hud-right { width: 220px; right: 16px; } #hud-left { left: 16px; }
-      #level-name { font-size: 26px; } #title h1 { font-size: 54px; letter-spacing: 6px; }
-      #overlay-title { font-size: 34px; } #mass { flex-direction: column; gap: 6px; }
+      #hud-left { left: 16px; } #level-name { font-size: 24px; } #chamber { font-size: 12px; letter-spacing: 2px; }
+      #hud-right { width: 46vw; right: 16px; }
+      #heat-num { font-size: 18px; } .label { font-size: 11px; letter-spacing: 2px; }
+      #mass { gap: 10px; margin-top: 8px; }
+      #mass .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      #overlay-title { font-size: 34px; letter-spacing: 3px; padding: 0 16px; } #overlay-sub { font-size: 15px; }
+      #intro { font-size: 15px; }
+    }
+    /* portrait phones: heat + mass get their own row under the chamber name */
+    @media (max-width: 600px) and (orientation: portrait) {
+      #hud-right { left: calc(16px + var(--sal)); right: calc(16px + var(--sar)); width: auto; top: calc(70px + var(--sat)) !important;
+        display: grid; grid-template-columns: auto 1fr; column-gap: 10px; align-items: center; text-align: left; }
+      #heat-label { grid-column: 1; } #heat-num { grid-column: 1; grid-row: 2; font-size: 16px; }
+      #hud-right > .bar { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+      #mass { grid-column: 1 / span 2; margin-top: 6px; }
+      body.touch #hud-bottom { top: calc(150px + var(--sat)); }
+      #dpad, #tactions { transform-origin: bottom left; }
+    }
+    /* landscape phones: very little height */
+    @media (max-height: 460px) {
+      #hud-left { top: calc(10px + var(--sat)); } #level-name { font-size: 20px; } #chamber { font-size: 11px; }
+      #hud-right { top: calc(10px + var(--sat)) !important; width: 230px; }
+      #heat-num { font-size: 15px; line-height: 1; } .bar { margin-top: 2px; } #mass { margin-top: 4px; }
+      #mass .label { font-size: 10px; letter-spacing: 1px; white-space: nowrap; }
+      body.touch #hud-left { top: calc(10px + var(--sat)); }
+      #tpause { top: calc(10px + var(--sat)); width: 42px !important; height: 42px !important; }
+      body.touch #hud-bottom { top: calc(60px + var(--sat)); right: 50%; }
+      #intro { font-size: 13px !important; }
+      #dpad button, #tactions button { width: 56px; height: 56px; }
+      #dpad [data-act="up"] { left: calc(12px + var(--sal) + 56px); bottom: calc(10px + var(--sab) + 112px); }
+      #dpad [data-act="left"] { left: calc(12px + var(--sal)); bottom: calc(10px + var(--sab) + 56px); }
+      #dpad [data-act="right"] { left: calc(12px + var(--sal) + 112px); bottom: calc(10px + var(--sab) + 56px); }
+      #dpad [data-act="down"] { left: calc(12px + var(--sal) + 56px); bottom: calc(10px + var(--sab)); }
+      #dpad { left: calc(12px + var(--sal)); bottom: calc(10px + var(--sab)); width: 168px; height: 168px; }
+      #tactions { right: calc(12px + var(--sar)); bottom: calc(10px + var(--sab)); width: 124px; height: 124px; }
+      #tactions [data-act="rotl"] { right: calc(12px + var(--sar) + 66px); bottom: calc(10px + var(--sab) + 66px); }
+      #tactions [data-act="rotr"] { right: calc(12px + var(--sar)); bottom: calc(10px + var(--sab) + 66px); }
+      #tactions [data-act="restart"] { right: calc(12px + var(--sar) + 66px); bottom: calc(10px + var(--sab)); }
+      #tactions [data-act="undo"] { right: calc(12px + var(--sar)); bottom: calc(10px + var(--sab)); }
+      #overlay-title { font-size: 30px; }
     }
   </style>
+  <link rel="stylesheet" href="src3d/ui.css">
   <script type="importmap">
     { "imports": {
         "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
@@ -63,7 +144,7 @@
     } }
   </script>
 </head>
-<body>
+<body data-mode="menu">
   <div id="view"></div>
 
   <div id="hud-left" class="hud">
@@ -81,15 +162,22 @@
   </div>
   <div id="hud-bottom" class="hud">
     <div id="intro"></div>
-    <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; M mute</div>
+    <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; ESC pause</div>
   </div>
 
   <div id="overlay"><div id="overlay-title"></div><div id="overlay-sub"></div></div>
-  <div id="title">
-    <h1>BINARY CORE</h1>
-    <p>TWO ELEMENTS. ONE CRUCIBLE. FUSE OR FADE.</p>
-    <div class="press">PRESS ENTER</div>
+  <div id="touch">
+    <button id="tpause" data-act="pause" aria-label="Pause">❚❚</button>
+    <div id="dpad">
+      <button data-act="up" aria-label="Up">▲</button><button data-act="left" aria-label="Left">◀</button>
+      <button data-act="right" aria-label="Right">▶</button><button data-act="down" aria-label="Down">▼</button>
+    </div>
+    <div id="tactions">
+      <button data-act="rotl" aria-label="Rotate left">⟲</button><button data-act="rotr" aria-label="Rotate right">⟳</button>
+      <button data-act="restart" aria-label="Restart">↺</button><button data-act="undo" aria-label="Undo">UNDO</button>
+    </div>
   </div>
+  <div id="ui"></div>
   <div id="flash"></div>
 
   <script type="module" src="src3d/game.js"></script>

@@ -1,0 +1,24 @@
+// Cutscene scripts. Each shot:
+//   image    — assets/cutscenes/<id>.png (also tries .jpg/.jpeg/.webp). Missing → code-drawn placeholder.
+//   text     — subtitle, typed out on screen
+//   voice    — assets/audio/<voice>.mp3 (optional). The shot waits for the line to finish.
+//   duration — minimum seconds on screen
+//   art      — which placeholder to draw while the real image doesn't exist yet
+//   title    — show the BINARY CORE title card on this shot
+
+export const CUTSCENES = {
+  intro: [
+    { image: 'assets/cutscenes/intro_01.png', voice: 'vo_intro_01', duration: 6, art: 'ship',
+      text: 'The starship Meridian drifts through the dark. Its engines have gone silent.' },
+    { image: 'assets/cutscenes/intro_02.png', voice: 'vo_intro_02', duration: 6, art: 'core',
+      text: 'At its heart beat the Binary Core: Sol and Cryo, two elements bound as one.' },
+    { image: 'assets/cutscenes/intro_03.png', voice: 'vo_intro_03', duration: 4, art: 'fracture',
+      text: 'Then the core fractured.' },
+    { image: 'assets/cutscenes/intro_04.png', voice: 'vo_intro_04', duration: 6, art: 'apart',
+      text: 'Apart, they cannot last. Sol burns away. Cryo boils into nothing.' },
+    { image: 'assets/cutscenes/intro_05.png', voice: 'vo_intro_05', duration: 5.5, art: 'crucible',
+      text: 'The Crucible still holds its heat. But not for long.' },
+    { image: 'assets/cutscenes/intro_06.png', voice: 'vo_intro_06', duration: 6, art: 'title', title: true,
+      text: 'Bring them back together.' },
+  ],
+};

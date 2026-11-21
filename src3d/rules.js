@@ -225,7 +225,9 @@ function settle(level, s, events) {
       }
 
       // Resting: take the temperature of what's below (vents override).
-      if (here === '^' || here === 'v') continue;
+      // Inside a grate cell an element is "pooled in the bars": it keeps its state,
+      // so a liquid can never turn solid while stuck inside a grate.
+      if (here === '^' || here === 'v' || here === '=') continue;
       const t = supportTemp(level, s, who);
       if (t === undefined) continue;
       if (e.st === STATE.GAS && t !== 0) continue;

@@ -5,21 +5,28 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { LEVELS } from './levels.js';
-import { parseLevel, step, adjacent, ELEMENTS, STATE } from './rules.js';
+import { parseLevel, step, adjacent, ELEMENTS, STATE, DIRS } from './rules.js';
 import {
   COL, cellToWorld, makeMaterials, buildLevel, makeCrate, createElement, createTether, createBursts, createAlloy,
 } from './visuals.js';
-import { initAudio, sfx, startMusic, toggleMute } from './audio.js';
+import { sfx, toggleMute, setVolumes } from './audio.js';
+import * as ui from './ui.js';
+import { onSettings, recordWin } from './store.js';
 
 const params = new URLSearchParams(location.search);
 const SHOT = params.has('shot');
+// Touch / mobile: ?touch forces the touch UI (handy for testing on desktop).
+const FORCE_TOUCH = params.has('touch');
+const COARSE = matchMedia('(pointer: coarse)').matches;
+const MOBILE = COARSE || FORCE_TOUCH || Math.min(innerWidth, innerHeight) < 600;
+const PFX = MOBILE ? 0.5 : 1; // particle count multiplier
 const NAMES = { sol: 'SOL', cryo: 'CRYO' };
 const $ = (id) => document.getElementById(id);
 
 // ---------- renderer / scene ----------
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(devicePixelRatio, MOBILE ? 1.5 : 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -36,7 +43,7 @@ scene.add(new THREE.HemisphereLight(0x9aaedc, 0x1a140f, 1.0));
 scene.add(new THREE.AmbientLight(0x4a5470, 0.5));
 const sun = new THREE.DirectionalLight(0xfff1dc, 2.0);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.mapSize.set(MOBILE ? 1024 : 2048, MOBILE ? 1024 : 2048);
 sun.shadow.bias = -0.0008;
 sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
@@ -48,7 +55,7 @@ composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
 const mats = makeMaterials();
-const bursts = createBursts();
+const bursts = createBursts(MOBILE ? 260 : 600);
 scene.add(bursts.points);
 const tether = createTether();
 scene.add(tether.mesh);
@@ -72,9 +79,10 @@ const ease = {
   elastic: (t) => (t === 0 || t === 1 ? t : 2 ** (-10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1),
 };
 function tween(obj, to, { delay = 0, dur = 150, e = 'out', done } = {}) {
-  tweens.push({ obj, to, start: now + delay, dur, e: ease[e], from: null, done });
+  tweens.push({ obj, to, start: now + delay * motion, dur: dur * motion, e: ease[e], from: null, done });
 }
-function after(ms, fn) { timers.push({ at: now + ms, fn }); }
+function kick(v) { cam.shake = v * shakeScale; } // camera shake, respects settings
+function after(ms, fn) { timers.push({ at: now + ms * motion, fn }); }
 function clearAnims() { tweens = []; timers = []; }
 function runAnims() {
   for (const tw of tweens) {
@@ -102,8 +110,11 @@ let tetherOn = false;
 let busyUntil = 0;
 let queued = null;
 let locked = false; // during win sequence / level transition
-let started = SHOT || params.has('level');
-const cam = { rot: 0, angle: 0, shake: 0, zoom: 1 }; // rot = quarter turns; angle tweens toward it
+// mode: 'menu' (level orbits behind the menus) | 'cutscene' | 'game' | 'paused'
+let mode = 'menu';
+let runTurns = 0;
+let motion = 1, shakeScale = 1, drift = true;
+const cam = { rot: 0, angle: 0, shake: 0 }; // rot = quarter turns; angle tweens toward it
 const shakeOffset = new THREE.Vector3();
 
 function loadLevel(i) {
@@ -127,7 +138,7 @@ function loadLevel(i) {
   $('chamber').textContent = `CHAMBER ${i + 1} / ${LEVELS.length}`;
   $('level-name').textContent = LEVELS[i].name.toUpperCase();
   $('intro').textContent = LEVELS[i].intro ?? '';
-  if (started) sfx(`vo_${i + 1}`, 1);
+  if (mode === 'game') sfx(`vo_${i + 1}`, 1);
 }
 
 function worldPos(p, out = new THREE.Vector3()) { return cellToWorld(level, p.x, p.y, p.z, out); }
@@ -159,40 +170,126 @@ function snapToState() {
 
 // ---------- camera ----------
 
+// The level is fitted into the part of the screen not covered by HUD, menus or touch controls.
+// Those rects are measured from the DOM, eased toward (so mode changes glide), and used to
+// build an orthographic frustum that centres the level's projected bounds in that area.
+const levelBox = new THREE.Box3();
+const tmpV = new THREE.Vector3();
+const boxCorners = Array.from({ length: 8 }, () => new THREE.Vector3());
+const insets = { l: 0, t: 0, r: 0, b: 0 };
+const insetTarget = { l: 0, t: 0, r: 0, b: 0 };
+let insetSnap = true;
+
 function fitCamera() {
+  // Bounds of the solid cells + starting elements (not the starfield, which lives in world.group).
+  levelBox.makeEmpty();
+  const AIR = new Set(['.', '^', 'v']);
+  const c = new THREE.Vector3();
+  level.cells.forEach((layer, z) => layer.forEach((row, y) => [...row].forEach((ch, x) => {
+    if (AIR.has(ch)) return;
+    worldPos({ x, y, z }, c);
+    levelBox.expandByPoint(tmpV.set(c.x - 0.5, c.y - 1, c.z - 0.5));
+    levelBox.expandByPoint(tmpV.set(c.x + 0.5, c.y, c.z + 0.5));
+  })));
+  for (const k of ELEMENTS) {
+    worldPos(state[k], c);
+    levelBox.expandByPoint(tmpV.set(c.x, c.y + 0.9, c.z));
+  }
+  if (levelBox.isEmpty()) levelBox.set(new THREE.Vector3(-3, 0, -3), new THREE.Vector3(3, 2, 3));
   const span = Math.max(level.w, level.d);
-  cam.zoom = span * 0.48 + level.h * 0.3 + 0.9;
   sun.shadow.camera.left = sun.shadow.camera.bottom = -span;
   sun.shadow.camera.right = sun.shadow.camera.top = span;
   sun.shadow.camera.near = 0.5;
   sun.shadow.camera.far = 60;
   sun.shadow.camera.updateProjectionMatrix();
+  insetSnap = true;
   resize();
 }
 
+function visibleRect(sel) {
+  const el = document.querySelector(sel);
+  if (!el) return null;
+  const cs = getComputedStyle(el);
+  if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) return null;
+  const r = el.getBoundingClientRect();
+  return r.width && r.height ? r : null;
+}
+
+function measureInsets() {
+  const W = innerWidth, H = innerHeight;
+  const pad = Math.max(10, Math.min(W, H) * 0.035);
+  const t = { l: pad, t: pad, r: pad, b: pad };
+  const portrait = H > W * 1.05;
+  if (mode === 'menu') {
+    const wrap = visibleRect('.screen-main.active .main-wrap');
+    if (wrap && W >= 760) t.l = Math.max(t.l, wrap.right + 24);       // board beside the menu
+    else if (wrap) t.t = Math.max(t.t, Math.min(wrap.bottom + 12, H * 0.72)); // portrait: below the buttons
+  } else {
+    for (const sel of ['#hud-left', '#hud-right', '#hud-bottom', '#tpause']) {
+      const r = visibleRect(sel);
+      if (!r) continue;
+      if (r.top + r.height / 2 < H / 2) t.t = Math.max(t.t, r.bottom + 8);
+      else t.b = Math.max(t.b, H - r.top + 8);
+    }
+    for (const sel of ['#dpad', '#tactions']) {
+      const r = visibleRect(sel);
+      if (!r) continue;
+      if (portrait) t.b = Math.max(t.b, H - r.top + 6);
+      else if (r.left + r.width / 2 < W / 2) t.l = Math.max(t.l, r.right + 6);
+      else t.r = Math.max(t.r, W - r.left + 6);
+    }
+  }
+  Object.assign(insetTarget, t);
+}
+
 function resize() {
-  const aspect = innerWidth / innerHeight;
-  const s = cam.zoom * (aspect < 1 ? 1.35 / aspect : 1);
-  camera.left = -s * aspect; camera.right = s * aspect; camera.top = s; camera.bottom = -s;
-  camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   composer.setSize(innerWidth, innerHeight);
-  bloom.setSize(innerWidth, innerHeight);
+  const pr = renderer.getPixelRatio();
+  if (MOBILE) bloom.setSize(innerWidth * pr * 0.5, innerHeight * pr * 0.5); // half-res bloom on phones
+  else bloom.setSize(innerWidth * pr, innerHeight * pr);
+  measureInsets();
+  insetSnap = true;
 }
 addEventListener('resize', resize);
+addEventListener('orientationchange', () => setTimeout(resize, 120));
 
+function applyProjection(dt) {
+  const W = innerWidth, H = innerHeight;
+  const f = insetSnap ? 1 : 1 - Math.exp(-dt * 6);
+  for (const k of ['l', 't', 'r', 'b']) insets[k] += (insetTarget[k] - insets[k]) * f;
+  insetSnap = false;
+  const { min, max } = levelBox;
+  let i = 0;
+  for (const x of [min.x, max.x]) for (const y of [min.y, max.y]) for (const z of [min.z, max.z]) boxCorners[i++].set(x, y, z);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const c of boxCorners) {
+    tmpV.copy(c).applyMatrix4(camera.matrixWorldInverse);
+    x0 = Math.min(x0, tmpV.x); x1 = Math.max(x1, tmpV.x); y0 = Math.min(y0, tmpV.y); y1 = Math.max(y1, tmpV.y);
+  }
+  const aw = Math.max(60, W - insets.l - insets.r), ah = Math.max(60, H - insets.t - insets.b);
+  const k = Math.max((x1 - x0) / aw, (y1 - y0) / ah) * 1.04; // world units per pixel
+  const ax = insets.l + aw / 2, ay = insets.t + ah / 2;
+  camera.left = (x0 + x1) / 2 - ax * k; camera.right = camera.left + W * k;
+  camera.top = (y0 + y1) / 2 + ay * k; camera.bottom = camera.top - H * k;
+  camera.updateProjectionMatrix();
+}
+
+let dtFrame = 0;
 const YAW0 = THREE.MathUtils.degToRad(32); // off-diagonal so "forward" is unambiguous
 function updateCamera(t) {
   const yaw = YAW0 + cam.angle * Math.PI / 2;
   const target = new THREE.Vector3(0, level.h * 0.38, 0);
   const dist = 30;
   camera.position.set(target.x + Math.sin(yaw) * dist, target.y + dist * 0.82, target.z + Math.cos(yaw) * dist);
+  camera.lookAt(target);
+  camera.updateMatrixWorld();
+  applyProjection(dtFrame);
   if (cam.shake > 0) {
     shakeOffset.set((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(cam.shake);
     camera.position.add(shakeOffset);
   }
-  camera.position.y += Math.sin(t * 0.4) * 0.15; // gentle drift so the scene feels alive
-  camera.lookAt(target);
+  if (drift) camera.position.y += Math.sin(t * 0.4) * 0.15; // gentle drift so the scene feels alive
   sun.position.set(target.x + Math.sin(yaw + 0.9) * 14, 22, target.z + Math.cos(yaw + 0.9) * 14);
   sun.target.position.copy(target);
 }
@@ -217,7 +314,7 @@ function rotate(delta) {
 function tryMove(screenDir) { tryMoveWorld(worldDir(screenDir)); }
 
 function tryMoveWorld(dir) {
-  if (!started || locked || state.status !== 'play') return;
+  if (mode !== 'game' || ui.isOpen() || locked || state.status !== 'play') return;
   if (now < busyUntil) { queued = dir; return; }
   const { state: next, changed, events } = step(level, state, dir);
   if (!changed) {
@@ -280,8 +377,8 @@ function animate(events) {
         after(t0, () => {
           elements[ev.who].setState(ev.to);
           const p = elements[ev.who].group.position.clone(); p.y += 0.35;
-          bursts.burst(p, COL[ev.who], ev.to === STATE.GAS ? 30 : 16, ev.to === STATE.GAS ? 1.3 : 1.8);
-          if (ev.to === STATE.FROZEN) bursts.burst(p, 0xdff6ff, 14, 1.2);
+          bursts.burst(p, COL[ev.who], Math.round((ev.to === STATE.GAS ? 30 : 16) * PFX), ev.to === STATE.GAS ? 1.3 : 1.8);
+          if (ev.to === STATE.FROZEN) bursts.burst(p, 0xdff6ff, Math.round(14 * PFX), 1.2);
           elements[ev.who].pop.v = 1.4;
           tween(elements[ev.who].pop, { v: 1 }, { dur: 320, e: 'back' });
           sfx(ev.to === STATE.GAS ? 'boil' : ev.to === STATE.LIQUID ? 'melt' : 'freeze', 0.5);
@@ -307,7 +404,7 @@ function animate(events) {
         worldPos(ev.to, target); target.y += 0.5;
         tween(o.position, { y: gone ? -8 : target.y }, { delay: t0, dur: gone ? 700 : 110 + 90 * dist, e: gone ? 'in' : 'bounce' });
         if (gone) after(t0 + 700, () => { scene.remove(o); crateObjs.delete(ev.id); });
-        else after(t0 + 60 + 70 * dist, () => { cam.shake = 0.08; tween(cam, { shake: 0 }, { dur: 160 }); sfx('push', 0.4); });
+        else after(t0 + 60 + 70 * dist, () => { kick(0.08); tween(cam, { shake: 0 }, { dur: 160 }); sfx('push', 0.4); });
         crateClock[ev.id] = t0 + 110 + 90 * dist;
         end = Math.max(end, crateClock[ev.id]);
         break;
@@ -328,6 +425,8 @@ function animate(events) {
       }
       case 'win': {
         locked = true;
+        recordWin(levelIndex, state.turn);
+        runTurns += state.turn;
         const at = Math.max(clock.sol, clock.cryo, end) + 80;
         after(at, celebrate);
         break;
@@ -391,9 +490,9 @@ function showLose(ev) {
   const title = ev.reason === 'void' ? `${name} FELL INTO THE VOID`
     : ev.reason === 'evaporated' ? `${name} EVAPORATED` : 'THE CRUCIBLE WENT COLD';
   flash('rgba(255,60,80,0.7)', 400, 0.4);
-  cam.shake = 0.12; tween(cam, { shake: 0 }, { dur: 300 });
+  kick(0.12); tween(cam, { shake: 0 }, { dur: 300 });
   sfx('fail', 0.6);
-  showOverlay(title, 'Z  UNDO          R  RESTART', 'var(--danger)');
+  showOverlay(title, isTouch() ? 'TAP UNDO OR RESTART' : 'Z  UNDO          R  RESTART', 'var(--danger)');
 }
 
 function celebrate() {
@@ -413,24 +512,27 @@ function celebrate() {
     tween(alloy.scale, { x: 1, y: 1, z: 1 }, { dur: 900, e: 'elastic' });
     tween(alloy.position, { y: mid.y + 0.35 }, { delay: 300, dur: 700, e: 'bounce' });
     const p = new THREE.Vector3(mid.x, lift, mid.z);
-    bursts.burst(p, COL.sol, 60, 3.2);
-    bursts.burst(p, COL.cryo, 60, 3.2);
-    bursts.burst(p, COL.alloy, 40, 2.2);
-    cam.shake = 0.35; tween(cam, { shake: 0 }, { dur: 500 });
+    bursts.burst(p, COL.sol, Math.round(60 * PFX), 3.2);
+    bursts.burst(p, COL.cryo, Math.round(60 * PFX), 3.2);
+    bursts.burst(p, COL.alloy, Math.round(40 * PFX), 2.2);
+    kick(0.35); tween(cam, { shake: 0 }, { dur: 500 });
     flash('rgba(255,236,190,0.9)', 500, 0.7);
     sfx('fuse', 0.8);
   });
   const last = levelIndex === LEVELS.length - 1;
   after(1600, () => {
+    if (last) {
+      sfx('vo_end', 1);
+      if (!SHOT) { ui.showEnd({ chambers: LEVELS.length, turns: runTurns }); return; }
+    }
     showOverlay(last ? 'THE SHIP AWAKENS' : 'CORE STABILISED',
-      last ? 'THANKS FOR PLAYING  ·  ENTER TO RESTART' : 'PRESS ENTER FOR NEXT CHAMBER', 'var(--gold)');
-    if (last) sfx('vo_end', 1);
+      last ? 'THANKS FOR PLAYING' : (isTouch() ? 'TAP TO CONTINUE' : 'PRESS ENTER FOR NEXT CHAMBER'), 'var(--gold)');
   });
 }
 
 function nextLevel() {
   if (state.status !== 'won' || !$('overlay').classList.contains('show')) return;
-  loadLevel(levelIndex === LEVELS.length - 1 ? 0 : levelIndex + 1);
+  if (levelIndex < LEVELS.length - 1) loadLevel(levelIndex + 1);
 }
 
 // ---------- HUD ----------
@@ -456,23 +558,11 @@ const KEYS = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
 };
 
-async function start() {
-  if (started) return;
-  started = true;
-  $('title').classList.remove('show');
-  await initAudio();
-  startMusic();
-  sfx('tether', 0.5);
-  sfx(`vo_${levelIndex + 1}`, 1);
-}
-
 addEventListener('keydown', (ev) => {
-  if (!started) {
-    if (ev.code === 'Enter' || ev.code === 'Space') start();
-    return;
-  }
+  if (mode !== 'game' || ui.isOpen()) return; // menus consume their own keys
   if (KEYS[ev.code]) { ev.preventDefault(); tryMove(KEYS[ev.code]); return; }
   switch (ev.code) {
+    case 'Escape': if (!SHOT) ui.openPause(); break;
     case 'KeyQ': rotate(-1); break;
     case 'KeyE': rotate(1); break;
     case 'KeyZ': case 'Backspace': undo(); break;
@@ -483,20 +573,125 @@ addEventListener('keydown', (ev) => {
     case 'BracketLeft': gotoLevel(levelIndex - 1); break;
   }
 });
-$('title').addEventListener('pointerdown', start);
-// Gesture needed for audio when entering via ?level=
-if (started) addEventListener('pointerdown', () => initAudio().then(startMusic), { once: true });
-addEventListener('keydown', () => { if (started) initAudio().then(startMusic); }, { once: true });
+
+// ---------- touch ----------
+
+const isTouch = () => document.body.classList.contains('touch');
+if (COARSE || FORCE_TOUCH) document.body.classList.add('touch');
+addEventListener('pointerdown', (e) => { if (e.pointerType === 'touch') document.body.classList.add('touch'); }, true);
+addEventListener('keydown', () => { if (!FORCE_TOUCH) document.body.classList.remove('touch'); }, true);
+
+// Swipe: pick the world direction whose on-screen projection best matches the swipe.
+const SWIPE_MIN = 22;
+function swipeToWorld(dx, dy) {
+  const o = new THREE.Vector3(0, 0, 0).project(camera);
+  let best = 'north', bestDot = -Infinity;
+  for (const [name, d] of Object.entries(DIRS)) {
+    const p = new THREE.Vector3(d.x, 0, d.y).project(camera);
+    const sx = p.x - o.x, sy = -(p.y - o.y) * (innerHeight / innerWidth);
+    const len = Math.hypot(sx, sy) || 1;
+    const dot = (sx * dx + sy * dy) / len;
+    if (dot > bestDot) { bestDot = dot; best = name; }
+  }
+  return best;
+}
+let swipe = null;
+const view = $('view');
+view.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'mouse') return;
+  swipe = { x: e.clientX, y: e.clientY, id: e.pointerId, fired: false };
+});
+view.addEventListener('pointermove', (e) => {
+  if (!swipe || swipe.fired || e.pointerId !== swipe.id) return;
+  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+  if (Math.hypot(dx, dy) < SWIPE_MIN * 1.6) return;
+  swipe.fired = true; // move as soon as the swipe is clear, no need to lift the finger
+  if (mode === 'game' && !ui.isOpen()) tryMoveWorld(swipeToWorld(dx, dy));
+});
+view.addEventListener('pointerup', (e) => {
+  if (!swipe || e.pointerId !== swipe.id) return;
+  const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
+  const s0 = swipe; swipe = null;
+  if (s0.fired || mode !== 'game' || ui.isOpen()) return;
+  if (Math.hypot(dx, dy) >= SWIPE_MIN) tryMoveWorld(swipeToWorld(dx, dy));
+  else nextLevel(); // tap: advances after a win
+});
+view.addEventListener('pointercancel', () => { swipe = null; });
+$('overlay').addEventListener('pointerdown', () => { if (mode === 'game') nextLevel(); });
+
+// On-screen D-pad (screen directions, like the arrow keys) + action buttons. Holding repeats.
+let repeatTimer = 0;
+function touchAct(act) {
+  if (mode !== 'game' || ui.isOpen()) return;
+  switch (act) {
+    case 'up': case 'down': case 'left': case 'right': tryMove(act); break;
+    case 'undo': undo(); break;
+    case 'restart': restart(); break;
+    case 'rotl': rotate(-1); break;
+    case 'rotr': rotate(1); break;
+    case 'pause': ui.openPause(); break;
+  }
+}
+for (const btn of document.querySelectorAll('#touch [data-act]')) {
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    btn.classList.add('down');
+    const act = btn.dataset.act;
+    touchAct(act);
+    clearInterval(repeatTimer);
+    if (['up', 'down', 'left', 'right', 'undo'].includes(act)) {
+      repeatTimer = setTimeout(() => { repeatTimer = setInterval(() => touchAct(act), 190); }, 380);
+    }
+  });
+  const up = () => { btn.classList.remove('down'); clearTimeout(repeatTimer); clearInterval(repeatTimer); };
+  btn.addEventListener('pointerup', up);
+  btn.addEventListener('pointercancel', up);
+  btn.addEventListener('pointerleave', up);
+}
+$('intro').addEventListener('click', () => $('intro').classList.toggle('expanded'));
+
+// ---------- modes (called by ui.js) ----------
+
+function setMode(m) {
+  mode = m;
+  document.body.dataset.mode = m;
+  requestAnimationFrame(measureInsets);
+  if (m === 'game') hideOverlayIfPlaying();
+}
+function hideOverlayIfPlaying() { if (state.status === 'play') hideOverlay(); }
+
+function startLevel(i) {
+  setMode('game');
+  cam.rot = 0; cam.angle = 0;
+  loadLevel(Math.max(0, Math.min(i, LEVELS.length - 1)));
+}
+
+function showMenuBackground() {
+  setMode('menu');
+  if (!level || levelIndex !== 0 || state !== initial) loadLevel(0);
+}
+
+onSettings((s) => {
+  bloom.enabled = !!s.bloom;
+  shakeScale = s.shake ? 1 : 0;
+  motion = s.reducedMotion ? 0.55 : 1;
+  drift = !s.reducedMotion;
+  setVolumes(s);
+});
 
 // ---------- loop ----------
 
 const clock = new THREE.Clock();
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpD = new THREE.Vector3(), viewDir = new THREE.Vector3();
+let frameNo = 0;
 function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   now += dt * 1000;
   const t = now / 1000;
   runAnims();
+  if (mode === 'menu') cam.angle += dt * (drift ? 0.07 : 0.02); // slow orbit behind the menus
+  dtFrame = dt;
+  if ((frameNo++ & 15) === 0) measureInsets(); // HUD/menu layout can change; cheap to re-measure
   updateCamera(t);
 
   const heatFrac = Math.max(0, Math.min(1, state.heat / level.heat));
@@ -540,11 +735,19 @@ function frame() {
 
 // ---------- boot ----------
 
+ui.initUI({
+  startLevel, showMenuBackground, setMode, restart,
+  resetRun: () => { runTurns = 0; },
+  levelInfo: () => ({ index: levelIndex, name: LEVELS[levelIndex].name }),
+});
 loadLevel(levelIndex);
-if (!started) $('title').classList.add('show');
+// ?shot or ?level=N go straight to gameplay; ?screen=... opens a menu screen (dev); otherwise main menu.
+if (SHOT || params.has('level') || params.has('play')) startLevel(levelIndex);
+else if (params.has('screen')) ui.openDevScreen(params.get('screen'));
+else ui.showMainMenu();
 cam.angle = cam.rot;
 requestAnimationFrame(frame);
-window.__game = { get state() { return state; }, tryMove, tryMoveWorld, undo, restart, rotate, loadLevel };
+window.__game = { get state() { return state; }, tryMove, tryMoveWorld, undo, restart, rotate, loadLevel, startLevel };
 
 // Dev: ?play=south,east,...  replays world-direction moves (e.g. a solver path), one every 450ms.
 if (params.has('play')) {
