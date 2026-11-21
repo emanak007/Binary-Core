@@ -1,0 +1,22 @@
+<!doctype html>
+<!-- Level checker. Open via the dev server: http://localhost:8000/tools/solve.html -->
+<html><head><meta charset="utf-8"><title>Level Solver</title>
+<style>body{background:#14161d;color:#d6dae3;font:14px monospace;padding:16px}</style></head>
+<body><pre id="out">solving…</pre>
+<script type="module">
+  import { LEVELS } from '../src/levels.js';
+  import { parseLevel } from '../src/rules.js';
+  import { solve } from '../src/solver.js';
+  const lines = [];
+  // Without heat/mass limits: true minimum. With them: what the player actually faces.
+  for (const [i, def] of LEVELS.entries()) {
+    const free = parseLevel({ ...def, heat: 999, mass: 999 });
+    const real = parseLevel(def);
+    const a = solve(free.level, free.state, { ignoreMass: true });
+    const b = solve(real.level, real.state);
+    lines.push(`L${i + 1} ${def.name}`);
+    lines.push(`  unlimited: ${a.solved ? a.moves + ' moves' : 'UNSOLVABLE'} (${a.explored} states)`);
+    lines.push(`  with heat=${def.heat} mass=${def.mass}: ${b.solved ? b.moves + ' moves  ' + b.path.join(' ') : 'UNSOLVABLE'}`);
+  }
+  document.getElementById('out').textContent = lines.join('\n');
+</script></body></html>
