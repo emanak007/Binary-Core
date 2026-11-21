@@ -38,3 +38,13 @@ The camera looks **north**, from the south-east (`YAW0 = 32°`). In `src3d/level
 ## Workflow
 Edit `src3d/levels.js`, then open `tools/solve3d.html` and check every level says it can be solved. Replay the path with
 `3d.html?level=N&shot&play=<path>` and check the screenshot from the default view.
+
+## Onboarding curve
+Playtest: the old first level (a 9-move offset puzzle) took a new player over 2 minutes. The first decks must teach
+one idea each and be near-impossible to fail:
+1. **Wake**: both elements side by side, Crucible straight ahead (north). Just press ↑. Teaches "one input moves both".
+2. **Offset**: one visible wall block beside one element. Pressing toward it stops that one only: the desync "aha".
+3. **Edge**: a visible back wall + west wall. Hold one element against a wall while the other catches up.
+4. Only then a multi-step alignment puzzle (Ignition), then new mechanics one at a time.
+Rules for the first decks: walls must be VISIBLE blocks in the standing layer (never rely on the invisible map
+boundary for the intended solution), ≤ 5 moves, generous heat/mass, and the intro line states the idea plainly.
