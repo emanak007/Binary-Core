@@ -1,0 +1,554 @@
+// Binary Core 3D: renderer, animation, input and HUD. Rules live in rules.js.
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { LEVELS } from './levels.js';
+import { parseLevel, step, adjacent, ELEMENTS, STATE } from './rules.js';
+import {
+  COL, cellToWorld, makeMaterials, buildLevel, makeCrate, createElement, createTether, createBursts, createAlloy,
+} from './visuals.js';
+import { initAudio, sfx, startMusic, toggleMute } from './audio.js';
+
+const params = new URLSearchParams(location.search);
+const SHOT = params.has('shot');
+const NAMES = { sol: 'SOL', cryo: 'CRYO' };
+const $ = (id) => document.getElementById(id);
+
+// ---------- renderer / scene ----------
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+$('view').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(COL.bg);
+scene.fog = new THREE.Fog(COL.bg, 40, 80); // camera sits ~30-35 away: fog only the far void
+
+const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
+scene.add(new THREE.HemisphereLight(0x9aaedc, 0x1a140f, 1.0));
+scene.add(new THREE.AmbientLight(0x4a5470, 0.5));
+const sun = new THREE.DirectionalLight(0xfff1dc, 2.0);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.bias = -0.0008;
+sun.shadow.normalBias = 0.02;
+scene.add(sun, sun.target);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.55, 0.78);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+const mats = makeMaterials();
+const bursts = createBursts();
+scene.add(bursts.points);
+const tether = createTether();
+scene.add(tether.mesh);
+const alloy = createAlloy();
+scene.add(alloy);
+const elements = { sol: createElement('sol'), cryo: createElement('cryo') };
+for (const k of ELEMENTS) scene.add(elements[k].group);
+
+// ---------- tiny tween + scheduler ----------
+
+let now = 0; // ms, advanced by the render loop
+let tweens = [];
+let timers = [];
+const ease = {
+  linear: (t) => t,
+  out: (t) => 1 - (1 - t) * (1 - t),
+  in: (t) => t * t,
+  inOut: (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2),
+  bounce: (t) => { const n = 7.5625, d = 2.75; if (t < 1 / d) return n * t * t; if (t < 2 / d) return n * (t -= 1.5 / d) * t + 0.75; if (t < 2.5 / d) return n * (t -= 2.25 / d) * t + 0.9375; return n * (t -= 2.625 / d) * t + 0.984375; },
+  back: (t) => { const c = 1.70158; return 1 + (c + 1) * (t - 1) ** 3 + c * (t - 1) ** 2; },
+  elastic: (t) => (t === 0 || t === 1 ? t : 2 ** (-10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1),
+};
+function tween(obj, to, { delay = 0, dur = 150, e = 'out', done } = {}) {
+  tweens.push({ obj, to, start: now + delay, dur, e: ease[e], from: null, done });
+}
+function after(ms, fn) { timers.push({ at: now + ms, fn }); }
+function clearAnims() { tweens = []; timers = []; }
+function runAnims() {
+  for (const tw of tweens) {
+    if (now < tw.start) continue;
+    if (!tw.from) { tw.from = {}; for (const k in tw.to) tw.from[k] = tw.obj[k]; }
+    const f = Math.min(1, (now - tw.start) / tw.dur);
+    const v = tw.e(f);
+    for (const k in tw.to) tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * v;
+    if (f >= 1) { tw.finished = true; tw.done?.(); }
+  }
+  tweens = tweens.filter((t) => !t.finished);
+  const due = timers.filter((t) => now >= t.at);
+  timers = timers.filter((t) => now < t.at);
+  for (const t of due) t.fn();
+}
+
+// ---------- game state ----------
+
+let levelIndex = Math.min(Math.max((Number(params.get('level')) || 1) - 1, 0), LEVELS.length - 1);
+let level, initial, state, history, world;
+let crateObjs = new Map();
+const disp = { sol: new THREE.Vector3(), cryo: new THREE.Vector3() };
+const fx = { sol: { scale: 1, nx: 0, nz: 0 }, cryo: { scale: 1, nx: 0, nz: 0 } };
+let tetherOn = false;
+let busyUntil = 0;
+let queued = null;
+let locked = false; // during win sequence / level transition
+let started = SHOT || params.has('level');
+const cam = { rot: 0, angle: 0, shake: 0, zoom: 1 }; // rot = quarter turns; angle tweens toward it
+const shakeOffset = new THREE.Vector3();
+
+function loadLevel(i) {
+  levelIndex = i;
+  ({ level, state: initial } = parseLevel(LEVELS[i]));
+  state = initial;
+  history = [];
+  clearAnims();
+  if (world) scene.remove(world.group); // geometries are shared between levels: don't dispose
+  for (const o of crateObjs.values()) scene.remove(o);
+  crateObjs = new Map();
+  world = buildLevel(level, mats);
+  scene.add(world.group);
+  alloy.visible = false;
+  locked = false;
+  queued = null;
+  busyUntil = 0;
+  hideOverlay();
+  fitCamera();
+  snapToState();
+  $('chamber').textContent = `CHAMBER ${i + 1} / ${LEVELS.length}`;
+  $('level-name').textContent = LEVELS[i].name.toUpperCase();
+  $('intro').textContent = LEVELS[i].intro ?? '';
+  if (started) sfx(`vo_${i + 1}`, 1);
+}
+
+function worldPos(p, out = new THREE.Vector3()) { return cellToWorld(level, p.x, p.y, p.z, out); }
+
+function snapToState() {
+  clearAnims();
+  for (const k of ELEMENTS) {
+    const e = state[k];
+    worldPos(e, disp[k]);
+    fx[k].scale = e.fallen ? 0 : 1;
+    fx[k].nx = fx[k].nz = 0;
+    elements[k].setState(e.st);
+    elements[k].pop.v = 1;
+  }
+  const live = new Set(state.blocks.map((b) => b.id));
+  for (const [id, o] of crateObjs) if (!live.has(id)) { scene.remove(o); crateObjs.delete(id); }
+  for (const b of state.blocks) {
+    let o = crateObjs.get(b.id);
+    if (!o) { o = makeCrate(mats); crateObjs.set(b.id, o); scene.add(o); }
+    o.visible = true;
+    o.scale.setScalar(1);
+    worldPos(b, o.position).y += 0.5;
+  }
+  tetherOn = !state.sol.fallen && !state.cryo.fallen && adjacent(state.sol, state.cryo);
+  alloy.visible = false;
+  busyUntil = 0;
+  refreshHud();
+}
+
+// ---------- camera ----------
+
+function fitCamera() {
+  const span = Math.max(level.w, level.d);
+  cam.zoom = span * 0.48 + level.h * 0.3 + 0.9;
+  sun.shadow.camera.left = sun.shadow.camera.bottom = -span;
+  sun.shadow.camera.right = sun.shadow.camera.top = span;
+  sun.shadow.camera.near = 0.5;
+  sun.shadow.camera.far = 60;
+  sun.shadow.camera.updateProjectionMatrix();
+  resize();
+}
+
+function resize() {
+  const aspect = innerWidth / innerHeight;
+  const s = cam.zoom * (aspect < 1 ? 1.35 / aspect : 1);
+  camera.left = -s * aspect; camera.right = s * aspect; camera.top = s; camera.bottom = -s;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+  bloom.setSize(innerWidth, innerHeight);
+}
+addEventListener('resize', resize);
+
+const YAW0 = THREE.MathUtils.degToRad(32); // off-diagonal so "forward" is unambiguous
+function updateCamera(t) {
+  const yaw = YAW0 + cam.angle * Math.PI / 2;
+  const target = new THREE.Vector3(0, level.h * 0.38, 0);
+  const dist = 30;
+  camera.position.set(target.x + Math.sin(yaw) * dist, target.y + dist * 0.82, target.z + Math.cos(yaw) * dist);
+  if (cam.shake > 0) {
+    shakeOffset.set((Math.random() - 0.5), (Math.random() - 0.5), (Math.random() - 0.5)).multiplyScalar(cam.shake);
+    camera.position.add(shakeOffset);
+  }
+  camera.position.y += Math.sin(t * 0.4) * 0.15; // gentle drift so the scene feels alive
+  camera.lookAt(target);
+  sun.position.set(target.x + Math.sin(yaw + 0.9) * 14, 22, target.z + Math.cos(yaw + 0.9) * 14);
+  sun.target.position.copy(target);
+}
+
+// Screen direction -> world direction, based on current camera yaw.
+function worldDir(screen) {
+  const yaw = YAW0 + cam.rot * Math.PI / 2;
+  const fwd = { x: -Math.sin(yaw), y: -Math.cos(yaw) };   // away from viewer, in cell (x, y)
+  const right = { x: Math.cos(yaw), y: -Math.sin(yaw) };
+  const v = { up: fwd, down: { x: -fwd.x, y: -fwd.y }, right, left: { x: -right.x, y: -right.y } }[screen];
+  if (Math.abs(v.x) > Math.abs(v.y)) return v.x > 0 ? 'east' : 'west';
+  return v.y > 0 ? 'south' : 'north';
+}
+
+function rotate(delta) {
+  cam.rot += delta;
+  tween(cam, { angle: cam.rot }, { dur: 420, e: 'inOut' });
+}
+
+// ---------- turns ----------
+
+function tryMove(screenDir) { tryMoveWorld(worldDir(screenDir)); }
+
+function tryMoveWorld(dir) {
+  if (!started || locked || state.status !== 'play') return;
+  if (now < busyUntil) { queued = dir; return; }
+  const { state: next, changed, events } = step(level, state, dir);
+  if (!changed) {
+    for (const e of events) {
+      if (e.type === 'bump') nudge(e.who, e.dir);
+      if (e.type === 'stuck') shiver(e.who);
+    }
+    sfx('bump', 0.4);
+    return;
+  }
+  history.push(state);
+  state = next;
+  animate(events);
+}
+
+function nudge(who, d) {
+  const f = fx[who];
+  tween(f, { nx: d.x * 0.12, nz: d.y * 0.12 }, { dur: 55 });
+  tween(f, { nx: 0, nz: 0 }, { delay: 55, dur: 90 });
+}
+function shiver(who) {
+  const f = fx[who];
+  for (let i = 0; i < 4; i++) tween(f, { nx: i % 2 ? -0.05 : 0.05 }, { delay: i * 45, dur: 45 });
+  tween(f, { nx: 0 }, { delay: 180, dur: 45 });
+}
+
+// Play the event list in order. Each actor has its own clock so moves chain into falls.
+function animate(events) {
+  const clock = { sol: 0, cryo: 0 };
+  const crateClock = {};
+  let stepSound = false;
+  let end = 0;
+  const target = new THREE.Vector3();
+
+  for (const ev of events) {
+    switch (ev.type) {
+      case 'move': {
+        const t0 = clock[ev.who];
+        worldPos(ev.to, target);
+        tween(disp[ev.who], { x: target.x, y: target.y, z: target.z }, { delay: t0, dur: 140, e: 'out' });
+        clock[ev.who] = t0 + 140;
+        if (!stepSound) { stepSound = true; const st = elements[ev.who].state; sfx(`step_${st === 'frozen' ? 'solid' : st}`, 0.5); }
+        break;
+      }
+      case 'fall':
+      case 'rise': {
+        const t0 = clock[ev.who];
+        const dist = Math.abs(ev.to.z - ev.from.z);
+        const dur = ev.type === 'fall' ? 110 + 90 * dist : 220 + 180 * dist;
+        worldPos(ev.to, target);
+        const isVoid = ev.to.z < 0;
+        if (isVoid) target.y = -8;
+        tween(disp[ev.who], { y: target.y }, { delay: t0, dur: isVoid ? 700 : dur, e: ev.type === 'fall' ? (isVoid ? 'in' : 'bounce') : 'inOut' });
+        if (ev.type === 'fall' && !isVoid) after(t0 + dur * 0.6, () => sfx('step_solid', 0.35));
+        clock[ev.who] = t0 + (isVoid ? 700 : dur);
+        break;
+      }
+      case 'state': {
+        const t0 = clock[ev.who];
+        after(t0, () => {
+          elements[ev.who].setState(ev.to);
+          const p = elements[ev.who].group.position.clone(); p.y += 0.35;
+          bursts.burst(p, COL[ev.who], ev.to === STATE.GAS ? 30 : 16, ev.to === STATE.GAS ? 1.3 : 1.8);
+          if (ev.to === STATE.FROZEN) bursts.burst(p, 0xdff6ff, 14, 1.2);
+          elements[ev.who].pop.v = 1.4;
+          tween(elements[ev.who].pop, { v: 1 }, { dur: 320, e: 'back' });
+          sfx(ev.to === STATE.GAS ? 'boil' : ev.to === STATE.LIQUID ? 'melt' : 'freeze', 0.5);
+        });
+        clock[ev.who] = t0 + 60;
+        break;
+      }
+      case 'push': {
+        const o = crateObjs.get(ev.id);
+        if (!o) break;
+        worldPos(ev.to, target); target.y += 0.5;
+        tween(o.position, { x: target.x, z: target.z }, { dur: 140 });
+        crateClock[ev.id] = 140;
+        sfx('push', 0.5);
+        break;
+      }
+      case 'blockfall': {
+        const o = crateObjs.get(ev.id);
+        if (!o) break;
+        const t0 = crateClock[ev.id] ?? 0;
+        const dist = Math.abs(ev.to.z - ev.from.z);
+        const gone = ev.to.z < 0;
+        worldPos(ev.to, target); target.y += 0.5;
+        tween(o.position, { y: gone ? -8 : target.y }, { delay: t0, dur: gone ? 700 : 110 + 90 * dist, e: gone ? 'in' : 'bounce' });
+        if (gone) after(t0 + 700, () => { scene.remove(o); crateObjs.delete(ev.id); });
+        else after(t0 + 60 + 70 * dist, () => { cam.shake = 0.08; tween(cam, { shake: 0 }, { dur: 160 }); sfx('push', 0.4); });
+        crateClock[ev.id] = t0 + 110 + 90 * dist;
+        end = Math.max(end, crateClock[ev.id]);
+        break;
+      }
+      case 'shove': sfx('push', 0.5); break;
+      case 'void': {
+        const t0 = clock[ev.who];
+        tween(fx[ev.who], { scale: 0 }, { delay: Math.max(0, t0 - 400), dur: 450, e: 'in' });
+        after(Math.max(0, t0 - 600), () => sfx('fall', 0.6));
+        break;
+      }
+      case 'bump': nudge(ev.who, ev.dir); break;
+      case 'stuck': shiver(ev.who); break;
+      case 'tether': {
+        const at = Math.max(clock.sol, clock.cryo);
+        after(at, () => { if (ev.on && !tetherOn) sfx('tether', 0.4); tetherOn = ev.on; });
+        break;
+      }
+      case 'win': {
+        locked = true;
+        const at = Math.max(clock.sol, clock.cryo, end) + 80;
+        after(at, celebrate);
+        break;
+      }
+      case 'lose': {
+        const at = Math.max(clock.sol, clock.cryo, end) + 200;
+        after(at, () => showLose(ev));
+        break;
+      }
+    }
+  }
+  end = Math.max(end, clock.sol, clock.cryo);
+  busyUntil = now + Math.min(end, 260); // let the next input start once the move itself is done
+  after(Math.min(end, 260), () => { if (queued) { const q = queued; queued = null; tryMoveWorld(q); } });
+  refreshHud();
+}
+
+function undo() {
+  if (!history.length || locked) return;
+  state = history.pop();
+  hideOverlay();
+  snapToState();
+  sfx('undo', 0.5);
+}
+
+function restart() {
+  if (locked || state === initial) return;
+  history.push(state); // restart is undoable
+  state = initial;
+  hideOverlay();
+  snapToState();
+  sfx('undo', 0.5);
+}
+
+function gotoLevel(i) {
+  if (i < 0 || i >= LEVELS.length) return;
+  loadLevel(i);
+}
+
+// ---------- outcomes ----------
+
+function flash(color, ms = 260, peak = 0.55) {
+  const el = $('flash');
+  el.style.transition = 'none';
+  el.style.background = color;
+  el.style.opacity = peak;
+  requestAnimationFrame(() => { el.style.transition = `opacity ${ms}ms ease-out`; el.style.opacity = 0; });
+}
+
+function showOverlay(title, sub, color) {
+  $('overlay-title').textContent = title;
+  $('overlay-title').style.color = color;
+  $('overlay-sub').textContent = sub;
+  $('overlay').classList.add('show');
+}
+function hideOverlay() { $('overlay').classList.remove('show'); }
+
+function showLose(ev) {
+  if (state.status !== 'lost') return;
+  const name = NAMES[ev.who];
+  const title = ev.reason === 'void' ? `${name} FELL INTO THE VOID`
+    : ev.reason === 'evaporated' ? `${name} EVAPORATED` : 'THE CRUCIBLE WENT COLD';
+  flash('rgba(255,60,80,0.7)', 400, 0.4);
+  cam.shake = 0.12; tween(cam, { shake: 0 }, { dur: 300 });
+  sfx('fail', 0.6);
+  showOverlay(title, 'Z  UNDO          R  RESTART', 'var(--danger)');
+}
+
+function celebrate() {
+  const a = disp.sol, b = disp.cryo;
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+  tetherOn = false;
+  const lift = mid.y + 0.9;
+  for (const k of ELEMENTS) {
+    tween(disp[k], { x: mid.x, y: lift, z: mid.z }, { dur: 520, e: 'inOut' });
+    tween(fx[k], { scale: 0.35 }, { dur: 520, e: 'in' });
+  }
+  after(520, () => {
+    fx.sol.scale = fx.cryo.scale = 0;
+    alloy.visible = true;
+    alloy.position.set(mid.x, lift, mid.z);
+    alloy.scale.setScalar(0.01);
+    tween(alloy.scale, { x: 1, y: 1, z: 1 }, { dur: 900, e: 'elastic' });
+    tween(alloy.position, { y: mid.y + 0.35 }, { delay: 300, dur: 700, e: 'bounce' });
+    const p = new THREE.Vector3(mid.x, lift, mid.z);
+    bursts.burst(p, COL.sol, 60, 3.2);
+    bursts.burst(p, COL.cryo, 60, 3.2);
+    bursts.burst(p, COL.alloy, 40, 2.2);
+    cam.shake = 0.35; tween(cam, { shake: 0 }, { dur: 500 });
+    flash('rgba(255,236,190,0.9)', 500, 0.7);
+    sfx('fuse', 0.8);
+  });
+  const last = levelIndex === LEVELS.length - 1;
+  after(1600, () => {
+    showOverlay(last ? 'THE SHIP AWAKENS' : 'CORE STABILISED',
+      last ? 'THANKS FOR PLAYING  ·  ENTER TO RESTART' : 'PRESS ENTER FOR NEXT CHAMBER', 'var(--gold)');
+    if (last) sfx('vo_end', 1);
+  });
+}
+
+function nextLevel() {
+  if (state.status !== 'won' || !$('overlay').classList.contains('show')) return;
+  loadLevel(levelIndex === LEVELS.length - 1 ? 0 : levelIndex + 1);
+}
+
+// ---------- HUD ----------
+
+function refreshHud() {
+  const heatFrac = Math.max(0, state.heat / level.heat);
+  const low = heatFrac <= 0.25;
+  $('heat-num').textContent = Math.max(0, state.heat);
+  $('heat-num').style.color = low ? 'var(--danger)' : 'var(--text)';
+  $('heat-fill').style.width = `${heatFrac * 100}%`;
+  $('heat-fill').style.background = low ? 'var(--danger)' : 'var(--heat)';
+  for (const k of ELEMENTS) {
+    const e = state[k];
+    $(`${k}-text`).textContent = `${NAMES[k]} · ${e.fallen ? 'LOST' : e.st.toUpperCase()}  ${Math.max(0, e.mass)}`;
+    $(`${k}-fill`).style.width = `${Math.max(0, e.mass / level.mass) * 100}%`;
+  }
+}
+
+// ---------- input ----------
+
+const KEYS = {
+  ArrowUp: 'up', KeyW: 'up', ArrowDown: 'down', KeyS: 'down',
+  ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
+};
+
+async function start() {
+  if (started) return;
+  started = true;
+  $('title').classList.remove('show');
+  await initAudio();
+  startMusic();
+  sfx('tether', 0.5);
+  sfx(`vo_${levelIndex + 1}`, 1);
+}
+
+addEventListener('keydown', (ev) => {
+  if (!started) {
+    if (ev.code === 'Enter' || ev.code === 'Space') start();
+    return;
+  }
+  if (KEYS[ev.code]) { ev.preventDefault(); tryMove(KEYS[ev.code]); return; }
+  switch (ev.code) {
+    case 'KeyQ': rotate(-1); break;
+    case 'KeyE': rotate(1); break;
+    case 'KeyZ': case 'Backspace': undo(); break;
+    case 'KeyR': restart(); break;
+    case 'KeyM': toggleMute(); break;
+    case 'Enter': case 'Space': nextLevel(); break;
+    case 'BracketRight': gotoLevel(levelIndex + 1); break;
+    case 'BracketLeft': gotoLevel(levelIndex - 1); break;
+  }
+});
+$('title').addEventListener('pointerdown', start);
+// Gesture needed for audio when entering via ?level=
+if (started) addEventListener('pointerdown', () => initAudio().then(startMusic), { once: true });
+addEventListener('keydown', () => { if (started) initAudio().then(startMusic); }, { once: true });
+
+// ---------- loop ----------
+
+const clock = new THREE.Clock();
+const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpD = new THREE.Vector3(), viewDir = new THREE.Vector3();
+function frame() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  now += dt * 1000;
+  const t = now / 1000;
+  runAnims();
+  updateCamera(t);
+
+  const heatFrac = Math.max(0, Math.min(1, state.heat / level.heat));
+  world.update(t, heatFrac);
+  let maxZ = -Infinity;
+  for (const k of ELEMENTS) {
+    const e = state[k];
+    const el = elements[k];
+    el.group.position.set(disp[k].x + fx[k].nx, disp[k].y, disp[k].z + fx[k].nz);
+    el.group.scale.setScalar(fx[k].scale);
+    el.group.visible = fx[k].scale > 0.01;
+    el.update(t, Math.max(0, Math.min(1, e.mass / level.mass)));
+    if (!e.fallen) maxZ = Math.max(maxZ, e.z);
+  }
+  // Cutaway: fade floors above the highest element, plus anything between the camera and an element.
+  camera.getWorldDirection(viewDir);
+  const live = ELEMENTS.filter((k) => !state[k].fallen).map((k) => ({ z: state[k].z, p: elements[k].group.position }));
+  const topZ = maxZ === -Infinity ? level.h : maxZ;
+  world.setCutaway((b) => {
+    if (b.z > topZ) return true;
+    for (const e of live) {
+      if (b.z < e.z) continue; // floors under an element never hide it
+      tmpD.subVectors(b.obj.position, e.p);
+      const depth = tmpD.dot(viewDir);
+      if (depth > -0.4) continue; // block is behind the element
+      if (tmpD.addScaledVector(viewDir, -depth).length() < 1.15) return true;
+    }
+    return false;
+  });
+
+  const showTether = tetherOn && elements.sol.group.visible && elements.cryo.group.visible;
+  tmpA.copy(elements.sol.group.position).y += 0.32;
+  tmpB.copy(elements.cryo.group.position).y += 0.32;
+  tether.update(tmpA, tmpB, showTether, t);
+
+  if (alloy.visible) alloy.rotation.y = t * 0.9;
+  bursts.update(dt);
+  composer.render();
+  requestAnimationFrame(frame);
+}
+
+// ---------- boot ----------
+
+loadLevel(levelIndex);
+if (!started) $('title').classList.add('show');
+cam.angle = cam.rot;
+requestAnimationFrame(frame);
+window.__game = { get state() { return state; }, tryMove, tryMoveWorld, undo, restart, rotate, loadLevel };
+
+// Dev: ?play=south,east,...  replays world-direction moves (e.g. a solver path), one every 450ms.
+if (params.has('play')) {
+  const moves = params.get('play').split(',').filter(Boolean);
+  moves.forEach((m, i) => setTimeout(() => { busyUntil = 0; tryMoveWorld(m); }, 600 + i * 450));
+  setTimeout(() => { document.body.dataset.status = state.status; }, 900 + moves.length * 450); // for headless checks
+}

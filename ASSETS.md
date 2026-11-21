@@ -1,5 +1,10 @@
 # Asset Brief
 
+> **3D version (branch `3d`):** tile textures are wrapped onto voxel cube faces, so square,
+> seamless textures matter most: `warm`, `cold`, `hot`, `wall`, `grate`, `crucible`.
+> Skip `gap.png`, `bridge.png` and both backgrounds for now. Audio is unchanged.
+> Hold off on voice lines: the story and levels will change.
+
 Drop files at the exact paths below. Anything missing falls back to a code-drawn placeholder,
 so you can add assets one at a time and refresh the browser to see each one land.
 

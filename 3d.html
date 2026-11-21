@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Binary Core 3D</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0d0f14; --text: #e3e7ef; --dim: #7c8496; --faint: #555d6e;
+      --sol: #ffa94d; --cryo: #5ee7ff; --heat: #ff8a3d; --danger: #ff4d5e; --gold: #ffd88a;
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; color: var(--text);
+      font-family: Rajdhani, sans-serif; user-select: none; }
+    #view { position: fixed; inset: 0; }
+    #view canvas { display: block; }
+    .hud { position: fixed; pointer-events: none; }
+    #hud-left { top: 24px; left: 36px; }
+    #chamber { font-size: 15px; font-weight: 600; letter-spacing: 3px; color: var(--dim); }
+    #level-name { font-size: 36px; font-weight: 700; letter-spacing: 2px; line-height: 1.05; }
+    #hud-right { top: 24px; right: 36px; width: 340px; text-align: right; }
+    .label { font-size: 14px; font-weight: 700; letter-spacing: 3px; }
+    #heat-label { color: var(--heat); }
+    #heat-num { font-size: 22px; font-weight: 700; line-height: 1.1; }
+    .bar { height: 6px; background: #1b1f28; margin-top: 4px; overflow: hidden; }
+    .bar > div { height: 100%; transition: width 0.25s ease, background 0.25s; }
+    #heat-fill { background: var(--heat); }
+    #mass { display: flex; gap: 20px; margin-top: 12px; text-align: left; }
+    #mass > div { flex: 1; }
+    #mass .bar { height: 4px; }
+    #sol-text { color: var(--sol); } #cryo-text { color: var(--cryo); }
+    #sol-fill { background: var(--sol); } #cryo-fill { background: var(--cryo); }
+    #hud-bottom { bottom: 18px; left: 0; right: 0; text-align: center; padding: 0 16px; }
+    #intro { font-size: 19px; font-weight: 500; color: var(--dim); max-width: 1000px; margin: 0 auto 10px; }
+    #controls { font-size: 13px; font-weight: 700; letter-spacing: 2px; color: var(--faint); }
+    #overlay, #title { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; background: rgba(5, 6, 10, 0.62); opacity: 0; pointer-events: none;
+      transition: opacity 0.3s; text-align: center; }
+    #overlay.show, #title.show { opacity: 1; }
+    #title.show { pointer-events: auto; cursor: pointer; }
+    #overlay-title { font-size: 64px; font-weight: 700; letter-spacing: 6px; }
+    #overlay-sub { font-size: 20px; font-weight: 600; letter-spacing: 3px; color: var(--dim); margin-top: 8px; }
+    #title { background: radial-gradient(circle at 50% 45%, rgba(40, 22, 12, 0.55), rgba(5, 6, 10, 0.92)); }
+    #title h1 { margin: 0; font-size: 110px; letter-spacing: 14px; font-weight: 700;
+      text-shadow: 0 0 24px rgba(255, 154, 77, 0.55); }
+    #title p { margin: 4px 0 0; font-size: 22px; font-weight: 600; letter-spacing: 5px; color: var(--dim); }
+    #title .press { margin-top: 70px; color: var(--gold); font-size: 26px; font-weight: 700; letter-spacing: 6px;
+      animation: blink 1.6s ease-in-out infinite; }
+    @keyframes blink { 50% { opacity: 0.25; } }
+    #flash { position: fixed; inset: 0; pointer-events: none; opacity: 0; }
+    @media (max-width: 760px) {
+      #hud-right { width: 220px; right: 16px; } #hud-left { left: 16px; }
+      #level-name { font-size: 26px; } #title h1 { font-size: 54px; letter-spacing: 6px; }
+      #overlay-title { font-size: 34px; } #mass { flex-direction: column; gap: 6px; }
+    }
+  </style>
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    } }
+  </script>
+</head>
+<body>
+  <div id="view"></div>
+
+  <div id="hud-left" class="hud">
+    <div id="chamber">CHAMBER 1 / 1</div>
+    <div id="level-name"></div>
+  </div>
+  <div id="hud-right" class="hud">
+    <div id="heat-label" class="label">CRUCIBLE HEAT</div>
+    <div id="heat-num">0</div>
+    <div class="bar"><div id="heat-fill"></div></div>
+    <div id="mass">
+      <div><div id="sol-text" class="label"></div><div class="bar"><div id="sol-fill"></div></div></div>
+      <div><div id="cryo-text" class="label"></div><div class="bar"><div id="cryo-fill"></div></div></div>
+    </div>
+  </div>
+  <div id="hud-bottom" class="hud">
+    <div id="intro"></div>
+    <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; M mute</div>
+  </div>
+
+  <div id="overlay"><div id="overlay-title"></div><div id="overlay-sub"></div></div>
+  <div id="title">
+    <h1>BINARY CORE</h1>
+    <p>TWO ELEMENTS. ONE CRUCIBLE. FUSE OR FADE.</p>
+    <div class="press">PRESS ENTER</div>
+  </div>
+  <div id="flash"></div>
+
+  <script type="module" src="src3d/game.js"></script>
+</body>
+</html>

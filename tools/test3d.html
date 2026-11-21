@@ -1,0 +1,123 @@
+<!doctype html>
+<!-- 3D rules checks. Open via the dev server: http://localhost:8765/tools/test3d.html -->
+<html><head><meta charset="utf-8"><title>Rules Tests 3D</title>
+<style>body{background:#14161d;color:#d6dae3;font:14px monospace;padding:16px}</style></head>
+<body><pre id="out">running…</pre>
+<script type="module">
+  import { parseLevel, step, cellAt, STATE } from '../src3d/rules.js';
+  const out = [];
+  let fails = 0;
+  const check = (name, cond, info = '') => {
+    if (!cond) fails++;
+    out.push(`${cond ? 'PASS' : 'FAIL'}  ${name}${cond ? '' : '  ' + info}`);
+  };
+  // Small helper: build a level from layers (bottom first); always adds two X blocks in a far corner.
+  // If a fixture only uses one element, the other is parked in a sealed cell on an extra row.
+  const L = (layers, extra = {}) => {
+    const flat = layers.flat().join('');
+    const missing = !flat.includes('S') ? 'S' : !flat.includes('C') ? 'C' : null;
+    if (missing) {
+      const w = layers[0][0].length;
+      layers = layers.map((rows, z) => [...rows, '#'.repeat(w), z === 1 ? missing + '#'.repeat(w - 1) : '#'.repeat(w)]);
+    }
+    return parseLevel({ name: 't', heat: 99, mass: 99, ...extra, layers });
+  };
+  const at = (e) => `${e.x},${e.y},${e.z}`;
+  const run = (lv, st, dirs) => { let s = st; const ev = []; for (const d of dirs) { const r = step(lv, s, d); s = r.state; ev.push(...r.events); } return { s, ev }; };
+
+  try {
+    // 1. Gas rises through a grate. Cryo on hot floor boils at parse time.
+    {
+      const { state } = L([
+        ['XXh#'], ['..C.'], ['..=.'], ['....'],
+      ]);
+      check('gas rises through grate', state.cryo.st === STATE.GAS && state.cryo.z === 3, `${state.cryo.st} ${at(state.cryo)}`);
+    }
+    // 2. Liquid drips through a grate; 3. solid stands on it.
+    {
+      const { level, state } = L([
+        ['XX####'], ['......'], ['#=#=##'], ['S.C...'],
+      ]);
+      // Sol (solid) and Cryo (liquid) both step east onto grates.
+      const { s } = run(level, state, ['east']);
+      check('solid stands on grate', s.sol.z === 3 && s.sol.x === 1, at(s.sol));
+      check('liquid drips through grate', s.cryo.z === 1, at(s.cryo));
+    }
+    // 4. Hot vent turns Sol to gas (and it rises).
+    {
+      const { level, state } = L([
+        ['XX###'], ['.S^..'], ['.....'],
+      ]);
+      const { s } = run(level, state, ['east']);
+      check('hot vent turns Sol to gas', s.sol.st === STATE.GAS && s.sol.z === 2, `${s.sol.st} ${at(s.sol)}`);
+    }
+    // 5. Cold vent condenses gas, which then falls.
+    {
+      const t = L([
+        ['XX#hc'], ['...C.'], ['...v.'], ['.....'],
+      ]);
+      // Cryo boils on h at z1, rises into the cold vent at z2, condenses, falls back to z1 on h -> boils again (capped).
+      check('cold vent condenses (loop terminates)', ['liquid', 'gas'].includes(t.state.cryo.st), t.state.cryo.st);
+      const u = L([
+        ['XX###'], ['.....'], ['.#.##'], ['.Cv..'],
+      ], {});
+      // Cryo at z3 stands on '#' (liquid). Make it gas by hand, then move east into the cold vent.
+      const gas = structuredClone(u.state); gas.cryo.st = STATE.GAS;
+      const r = step(u.level, gas, 'east');
+      check('gas entering cold vent condenses to liquid', r.state.cryo.st === STATE.LIQUID, r.state.cryo.st);
+      check('condensed liquid falls through the hole', r.state.cryo.z === 1, at(r.state.cryo));
+    }
+    // 6. Walking off into the void loses.
+    {
+      const { level, state } = L([
+        ['XX#.'], ['..S.'],
+      ]);
+      const r = step(level, state, 'east');
+      check('falling into the void loses', r.state.status === 'lost' && r.state.reason.reason === 'void' && r.events.some((e) => e.type === 'void'), JSON.stringify(r.state.reason));
+    }
+    // 7. Crate pushed over a hole falls into it and becomes floor.
+    {
+      const { level, state } = L([
+        ['XX####'], ['####.#'], ['..SB..'],
+      ]);
+      const r = step(level, state, 'east');
+      const b = r.state.blocks[0];
+      check('crate falls into hole', b.x === 4 && b.z === 1 && r.events.some((e) => e.type === 'blockfall'), JSON.stringify(b));
+      const r2 = step(level, r.state, 'east');
+      check('crate bridge holds Sol up', r2.state.sol.z === 2 && r2.state.sol.x === 4, at(r2.state.sol));
+    }
+    // 8. Sol resting on Cryo freezes; Cryo resting on Sol boils.
+    {
+      const { state } = L([
+        ['XX###'], ['..C..'], ['..S..'], ['.....'],
+      ]);
+      check('standing on Cryo freezes Sol', state.sol.st === STATE.FROZEN, state.sol.st);
+      const t = L([
+        ['XX###'], ['..S..'], ['..C..'], ['.....'],
+      ]);
+      check('standing on Sol boils Cryo (rises)', t.state.cryo.st === STATE.GAS && t.state.cryo.z === 3, `${t.state.cryo.st} ${at(t.state.cryo)}`);
+    }
+    // 9. step does not mutate its input.
+    {
+      const { level, state } = L([
+        ['XX####'], ['..S.C.'],
+      ]);
+      const before = JSON.stringify(state);
+      step(level, state, 'east');
+      check('step does not mutate input', JSON.stringify(state) === before);
+    }
+    // 10. Win: both resting (non-gas) on X.
+    {
+      const { level, state } = L([
+        ['##XX'], ['.SC.'],
+      ]);
+      const r = step(level, state, 'east');
+      check('win when both rest on crucible', r.state.status === 'won', `${r.state.status} sol ${at(r.state.sol)} cryo ${at(r.state.cryo)}`);
+    }
+  } catch (err) {
+    fails++;
+    out.push('ERROR ' + err.stack);
+  }
+  out.push(fails ? `\n${fails} FAILED` : '\nALL PASS');
+  document.getElementById('out').textContent = out.join('\n');
+</script></body></html>
