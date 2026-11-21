@@ -736,13 +736,183 @@ export function createBursts(max = 600) {
 export function createAlloy() {
   const g = new THREE.Group();
   g.add(new THREE.Mesh(new RoundedBoxGeometry(0.62, 0.62, 0.62, 3, 0.12),
-    new THREE.MeshStandardMaterial({ color: COL.alloy, emissive: 0xffd27a, emissiveIntensity: 1.1, roughness: 0.2, metalness: 0.6 })));
-  const inner = new THREE.Mesh(new THREE.OctahedronGeometry(0.22), new THREE.MeshBasicMaterial({ color: COL.cryo, toneMapped: false }));
-  inner.position.y = 0.36;
-  g.add(inner);
-  const light = new THREE.PointLight(0xffd27a, 6, 6, 1.5);
+    new THREE.MeshStandardMaterial({ color: COL.alloy, emissive: 0xffd27a, emissiveIntensity: 1.2, roughness: 0.18, metalness: 0.65 })));
+  const inner = new THREE.Mesh(new THREE.OctahedronGeometry(0.24), new THREE.MeshBasicMaterial({ color: COL.cryo, toneMapped: false }));
+  inner.position.y = 0.38;
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: 0xffd88a, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const halo = new THREE.Mesh(new THREE.SphereGeometry(0.58, 20, 14), haloMat);
+  const ringA = new THREE.Mesh(
+    new THREE.TorusGeometry(0.54, 0.016, 8, 48),
+    new THREE.MeshBasicMaterial({ color: 0xffb85c, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+  );
+  ringA.rotation.set(0.55, 0.2, 0.35);
+  const ringC = new THREE.Mesh(
+    new THREE.TorusGeometry(0.66, 0.014, 8, 48),
+    new THREE.MeshBasicMaterial({ color: 0x5ee7ff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+  );
+  ringC.rotation.set(-0.6, 0.45, -0.3);
+  const light = new THREE.PointLight(0xffd27a, 6.5, 7, 1.5);
   light.position.y = 0.6;
-  g.add(light);
+  g.add(inner, halo, ringA, ringC, light);
   g.visible = false;
+  g.userData.update = (t) => {
+    g.rotation.y = t * 0.9;
+    inner.rotation.y = -t * 1.6;
+    ringA.rotation.x = 0.55 + t * 1.3;
+    ringA.rotation.z = 0.35 + Math.sin(t * 1.1) * 0.35;
+    ringC.rotation.x = -0.6 - t * 1.05;
+    ringC.rotation.y = 0.45 + t * 0.7;
+    const p = 1 + 0.08 * Math.sin(t * 4.2);
+    halo.scale.setScalar(p);
+    light.intensity = 6.2 + 0.9 * Math.sin(t * 5);
+  };
   return g;
+}
+
+// Reusable 3D win VFX: pre-fusion crucible column, swirling sparks, skyward relay beam, and dual shockwave rings.
+export function createWinFx(mobile = false) {
+  const group = new THREE.Group();
+  group.visible = false;
+
+  const colMat = new THREE.MeshBasicMaterial({
+    color: 0xffa94d, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const column = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.72, 2.8, 24, 1, true), colMat);
+  column.position.y = 1.4;
+
+  const beamMat = new THREE.MeshBasicMaterial({
+    color: 0xfff0c8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.2, 18, 20, 1, true), beamMat);
+  beam.position.y = 9.0;
+
+  const sheathMat = new THREE.MeshBasicMaterial({
+    color: 0x5ee7ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const sheath = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.48, 18, 20, 1, true), sheathMat);
+  sheath.position.y = 9.0;
+
+  const ringAMat = new THREE.MeshBasicMaterial({
+    color: 0xffbe66, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const ringA = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.014, 10, 64), ringAMat);
+  ringA.rotation.x = Math.PI / 2;
+  ringA.position.y = 0.85;
+
+  const ringCMat = new THREE.MeshBasicMaterial({
+    color: 0x6ef0ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const ringC = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.011, 10, 64), ringCMat);
+  ringC.rotation.set(Math.PI / 2 - 0.48, 0.35, 0);
+  ringC.position.y = 0.85;
+
+  const spN = mobile ? 18 : 36;
+  const spPos = new Float32Array(spN * 3);
+  const spCol = new Float32Array(spN * 3);
+  const spSeeds = [];
+  const ca = new THREE.Color(COL.sol), cc = new THREE.Color(COL.cryo);
+  for (let i = 0; i < spN; i++) {
+    const c = i % 2 === 0 ? ca : cc;
+    spCol[i * 3] = c.r; spCol[i * 3 + 1] = c.g; spCol[i * 3 + 2] = c.b;
+    spSeeds.push({ a: (i / spN) * Math.PI * 2, o: Math.random(), r: 0.35 + Math.random() * 0.55, sp: 0.7 + Math.random() * 0.8 });
+  }
+  const spGeo = new THREE.BufferGeometry();
+  spGeo.setAttribute('position', new THREE.BufferAttribute(spPos, 3));
+  spGeo.setAttribute('color', new THREE.BufferAttribute(spCol, 3));
+  const spMat = new THREE.PointsMaterial({
+    size: 0.11, vertexColors: true, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const sparks = new THREE.Points(spGeo, spMat);
+
+  group.add(column, beam, sheath, ringA, ringC, sparks);
+
+  let phase = 'idle';
+  let phaseT = 0;
+  let freeze = false;
+
+  function applyState(t) {
+    if (phase === 'spiral') {
+      const f = Math.min(1, phaseT / 0.62);
+      colMat.opacity = 0.12 + f * 0.32;
+      column.scale.set(1 - f * 0.45, 0.55 + f * 0.65, 1 - f * 0.45);
+      beam.visible = sheath.visible = ringA.visible = ringC.visible = false;
+      sparks.visible = true;
+      spMat.opacity = 0.45 + f * 0.55;
+      for (let i = 0; i < spN; i++) {
+        const sd = spSeeds[i];
+        const prog = (sd.o + phaseT * sd.sp * 1.4) % 1;
+        const a = sd.a + phaseT * 5.5 + prog * 2;
+        const r = sd.r * (1 - f * 0.55) * (1 - prog * 0.35);
+        spPos[i * 3] = Math.cos(a) * r;
+        spPos[i * 3 + 1] = prog * 2.4;
+        spPos[i * 3 + 2] = Math.sin(a) * r;
+      }
+      spGeo.attributes.position.needsUpdate = true;
+    } else if (phase === 'blast') {
+      const bf = Math.min(1, phaseT / 1.15);
+      const rfA = Math.min(1, phaseT / 0.85);
+      const rfC = Math.min(1, phaseT / 0.78);
+
+      column.visible = phaseT < 0.35;
+      colMat.opacity = Math.max(0, (1 - phaseT / 0.35) * 0.35);
+
+      beam.visible = sheath.visible = bf < 1;
+      const bw = 1.15 - bf * 0.85;
+      beam.scale.set(bw, 0.3 + Math.min(1, phaseT * 7) * 0.7, bw);
+      sheath.scale.set(bw * 1.15, beam.scale.y, bw * 1.15);
+      beamMat.opacity = Math.max(0, (1 - bf) * 0.48);
+      sheathMat.opacity = Math.max(0, (1 - bf) * 0.22);
+
+      ringA.visible = rfA < 1;
+      const ea = 1 - Math.pow(1 - rfA, 2.2);
+      ringA.scale.setScalar(0.4 + ea * 8.8);
+      ringAMat.opacity = Math.max(0, (1 - rfA) * 0.92);
+
+      ringC.visible = rfC < 1;
+      const ec = 1 - Math.pow(1 - rfC, 2.1);
+      ringC.scale.setScalar(0.3 + ec * 7.3);
+      ringCMat.opacity = Math.max(0, (1 - rfC) * 0.85);
+
+      sparks.visible = bf < 1;
+      spMat.opacity = Math.max(0, (1 - bf) * 0.9);
+      for (let i = 0; i < spN; i++) {
+        const sd = spSeeds[i];
+        const a = sd.a + (freeze ? phaseT : t) * 4.2;
+        const r = sd.r * (0.5 + bf * 2.2);
+        spPos[i * 3] = Math.cos(a) * r;
+        spPos[i * 3 + 1] = 0.4 + ((sd.o + phaseT * sd.sp) % 1) * 5.2;
+        spPos[i * 3 + 2] = Math.sin(a) * r;
+      }
+      spGeo.attributes.position.needsUpdate = true;
+      if (!freeze && phaseT > 1.35) { phase = 'idle'; group.visible = false; }
+    }
+  }
+
+  return {
+    group,
+    startSpiral(mid) {
+      group.position.copy(mid);
+      group.visible = true;
+      column.visible = true;
+      phase = 'spiral'; phaseT = 0; freeze = false;
+      applyState(0);
+    },
+    triggerBlast(mid, { frozen = false, at = 0 } = {}) {
+      group.position.copy(mid);
+      group.visible = true;
+      phase = 'blast'; phaseT = at; freeze = frozen;
+      applyState(at);
+    },
+    update(dt, t) {
+      if (phase === 'idle' || !group.visible) return;
+      if (!freeze) phaseT += dt;
+      applyState(t);
+    },
+    hide() {
+      phase = 'idle'; phaseT = 0; freeze = false;
+      group.visible = false;
+    },
+  };
 }

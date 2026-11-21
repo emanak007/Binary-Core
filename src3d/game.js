@@ -7,12 +7,13 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { LEVELS } from './levels.js';
 import { parseLevel, step, adjacent, ELEMENTS, STATE, DIRS } from './rules.js';
 import {
-  COL, cellToWorld, makeMaterials, buildLevel, makeCrate, createElement, createTether, createBursts, createAlloy,
+  COL, cellToWorld, makeMaterials, buildLevel, makeCrate, createElement, createTether, createBursts, createAlloy, createWinFx,
 } from './visuals.js';
 import { sfx, toggleMute, setVolumes } from './audio.js';
 import * as ui from './ui.js';
-import { onSettings, recordWin, unlockLevel } from './store.js';
+import { onSettings, recordWin, unlockLevel, progress } from './store.js';
 import { solve } from './solver.js';
+import { renderShipStatus } from './shipstatus.js';
 
 const params = new URLSearchParams(location.search);
 const SHOT = params.has('shot');
@@ -50,7 +51,8 @@ sun.shadow.normalBias = 0.02;
 scene.add(sun, sun.target);
 
 const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
+const renderPass = new RenderPass(scene, camera);
+composer.addPass(renderPass);
 const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.75, 0.55, 0.78);
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
@@ -62,6 +64,8 @@ const tether = createTether();
 scene.add(tether.mesh);
 const alloy = createAlloy();
 scene.add(alloy);
+const winFx = createWinFx(MOBILE);
+scene.add(winFx.group);
 const elements = { sol: createElement('sol'), cryo: createElement('cryo') };
 for (const k of ELEMENTS) scene.add(elements[k].group);
 
@@ -70,6 +74,7 @@ for (const k of ELEMENTS) scene.add(elements[k].group);
 let now = 0; // ms, advanced by the render loop
 let tweens = [];
 let timers = [];
+let spiral = null;
 const ease = {
   linear: (t) => t,
   out: (t) => 1 - (1 - t) * (1 - t),
@@ -84,7 +89,7 @@ function tween(obj, to, { delay = 0, dur = 150, e = 'out', done } = {}) {
 }
 function kick(v) { cam.shake = v * shakeScale; } // camera shake, respects settings
 function after(ms, fn) { timers.push({ at: now + ms * motion, fn }); }
-function clearAnims() { tweens = []; timers = []; }
+function clearAnims() { tweens = []; timers = []; spiral = null; winFx.hide(); }
 function runAnims() {
   for (const tw of tweens) {
     if (now < tw.start) continue;
@@ -140,9 +145,20 @@ function loadLevel(i) {
   fitCamera();
   snapToState();
   $('chamber').textContent = `DECK ${i + 1} / ${LEVELS.length}`;
+  refreshDeckPips();
   $('level-name').textContent = LEVELS[i].name.toUpperCase();
   $('intro').textContent = LEVELS[i].intro ?? '';
   if (mode === 'game') sfx(`vo_${i + 1}`, 1);
+}
+
+const solvedDecks = () => new Set(Object.keys(progress.best).map(Number));
+function refreshDeckPips() {
+  const wrap = $('deck-pips');
+  if (!wrap) return;
+  const solved = solvedDecks();
+  wrap.innerHTML = LEVELS.map((_, idx) =>
+    `<i class="${solved.has(idx) ? 'lit' : ''}${idx === levelIndex ? ' cur' : ''}"></i>`
+  ).join('');
 }
 
 function worldPos(p, out = new THREE.Vector3()) { return cellToWorld(level, p.x, p.y, p.z, out); }
@@ -253,6 +269,7 @@ function resize() {
   const pr = renderer.getPixelRatio();
   if (MOBILE) bloom.setSize(innerWidth * pr * 0.5, innerHeight * pr * 0.5); // half-res bloom on phones
   else bloom.setSize(innerWidth * pr, innerHeight * pr);
+  activeCutscene?.resize(innerWidth, innerHeight);
   measureInsets();
   insetSnap = true;
 }
@@ -450,6 +467,7 @@ function animate(events) {
       case 'win': {
         locked = true;
         recordWin(levelIndex, state.turn);
+        refreshDeckPips();
         runTurns += state.turn;
         const at = Math.max(clock.sol, clock.cryo, end) + 80;
         after(at, celebrate);
@@ -509,11 +527,18 @@ function showOverlay(title, sub, color) {
   $('overlay-sub').textContent = sub;
   $('overlay').classList.add('show');
 }
-function hideOverlay() { $('overlay').classList.remove('show'); }
+function hideOverlay() {
+  $('overlay').classList.remove('show', 'win');
+  const shipEl = $('overlay-ship');
+  if (shipEl) { shipEl.hidden = true; shipEl.innerHTML = ''; }
+}
 
 function showLose(ev) {
   if (state.status !== 'lost') return;
   noteStuck();
+  $('overlay').classList.remove('win');
+  const shipEl = $('overlay-ship');
+  if (shipEl) { shipEl.hidden = true; shipEl.innerHTML = ''; }
   const name = NAMES[ev.who];
   const title = ev.reason === 'void' ? `${name} FELL INTO THE VOID`
     : ev.reason === 'evaporated' ? `${name} EVAPORATED` : 'THE CRUCIBLE WENT COLD';
@@ -526,34 +551,61 @@ function showLose(ev) {
 function celebrate() {
   const a = disp.sol, b = disp.cryo;
   const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
-  tetherOn = false;
-  const lift = mid.y + 0.9;
-  for (const k of ELEMENTS) {
-    tween(disp[k], { x: mid.x, y: lift, z: mid.z }, { dur: 520, e: 'inOut' });
-    tween(fx[k], { scale: 0.35 }, { dur: 520, e: 'in' });
-  }
-  after(520, () => {
+  const r0 = Math.max(0.45, Math.hypot(a.x - mid.x, a.z - mid.z));
+  const ang0 = Math.atan2(a.z - mid.z, a.x - mid.x);
+  tetherOn = true;
+  spiral = {
+    start: now,
+    dur: 620 * motion,
+    mid: mid.clone(),
+    y0: Math.min(a.y, b.y),
+    r0,
+    ang0,
+    turns: drift ? Math.PI * 3.2 : Math.PI * 0.8,
+  };
+  winFx.startSpiral(mid);
+  sfx('tether', 0.55);
+
+  after(620, () => {
+    spiral = null;
+    tetherOn = false;
     fx.sol.scale = fx.cryo.scale = 0;
+    const lift = mid.y + 0.92;
+    winFx.triggerBlast(mid);
     alloy.visible = true;
     alloy.position.set(mid.x, lift, mid.z);
     alloy.scale.setScalar(0.01);
-    tween(alloy.scale, { x: 1, y: 1, z: 1 }, { dur: 900, e: 'elastic' });
-    tween(alloy.position, { y: mid.y + 0.35 }, { delay: 300, dur: 700, e: 'bounce' });
+    tween(alloy.scale, { x: 1, y: 1, z: 1 }, { dur: 820, e: 'elastic' });
+    tween(alloy.position, { y: mid.y + 0.35 }, { delay: 260, dur: 660, e: 'bounce' });
     const p = new THREE.Vector3(mid.x, lift, mid.z);
-    bursts.burst(p, COL.sol, Math.round(60 * PFX), 3.2);
-    bursts.burst(p, COL.cryo, Math.round(60 * PFX), 3.2);
-    bursts.burst(p, COL.alloy, Math.round(40 * PFX), 2.2);
-    kick(0.35); tween(cam, { shake: 0 }, { dur: 500 });
-    flash('rgba(255,236,190,0.9)', 500, 0.7);
-    sfx('fuse', 0.8);
+    bursts.burst(p, COL.sol, Math.round(65 * PFX), 3.4);
+    bursts.burst(p, COL.cryo, Math.round(65 * PFX), 3.4);
+    bursts.burst(p, COL.alloy, Math.round(45 * PFX), 2.4);
+    kick(0.42); tween(cam, { shake: 0 }, { dur: 520 });
+    flash('rgba(255,238,195,0.92)', 550, 0.78);
+    sfx('fuse', 0.85);
   });
+
+  after(880, () => {
+    const p = new THREE.Vector3(mid.x, mid.y + 0.55, mid.z);
+    bursts.burst(p, COL.sol, Math.round(35 * PFX), 2.5);
+    bursts.burst(p, COL.cryo, Math.round(35 * PFX), 2.5);
+  });
+
   const last = levelIndex === LEVELS.length - 1;
-  after(1600, () => {
+  after(1550, () => {
     if (last) {
       sfx('vo_end', 1);
       if (!SHOT) { ui.showEnd({ chambers: LEVELS.length, turns: runTurns }); return; }
     }
     // Lore: each chamber's Crucible relights one deck; the surge throws them into the next.
+    $('overlay').classList.add('win');
+    const shipEl = $('overlay-ship');
+    shipEl.hidden = false;
+    renderShipStatus(shipEl, {
+      total: LEVELS.length, solved: solvedDecks(), justLit: levelIndex,
+      onIgnite: () => sfx('deck_online', 0.75),
+    });
     showOverlay(last ? 'THE BOND HOLDS' : `DECK ${levelIndex + 1} ONLINE`,
       last ? 'THANKS FOR PLAYING'
         : `THE SURGE THROWS THEM APART  ·  ${isTouch() ? 'TAP TO CONTINUE' : 'ENTER: NEXT DECK'}`, 'var(--gold)');
@@ -806,60 +858,114 @@ function updateHintArrows(t) {
   }
 }
 
-// First two decks only: one set of direction keys around the pair, so players learn which
-// key moves which way under the angled camera. They fade after the first few moves.
+// First two decks only: flat floor arrows aligned to the tile grid around the pair,
+// paired with compact desktop keycap badges so players learn the angled directions.
 const glyphs = {};
 const glyphGroup = new THREE.Group();
 scene.add(glyphGroup);
 let glyphTouch = null;
-function glyphTexture(sd, touch) {
+function makeGlyphArrowMesh() {
+  const sh = new THREE.Shape();
+  sh.moveTo(-0.16, -0.048);
+  sh.lineTo(0.01, -0.048);
+  sh.lineTo(-0.03, -0.15);
+  sh.lineTo(0.18, 0);
+  sh.lineTo(-0.03, 0.15);
+  sh.lineTo(0.01, 0.048);
+  sh.lineTo(-0.16, 0.048);
+  sh.closePath();
+  const geo = new THREE.ShapeGeometry(sh);
+  geo.rotateX(-Math.PI / 2); // lie flat on XZ floor plane, pointing +X
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xffe9c2, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    toneMapped: false, side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.renderOrder = 4;
+  return mesh;
+}
+function keycapTexture(sd) {
   const c = document.createElement('canvas');
   c.width = c.height = 128;
   const g = c.getContext('2d');
+  g.beginPath();
+  g.roundRect(16, 16, 96, 96, 20);
+  g.fillStyle = 'rgba(12, 14, 20, 0.90)';
+  g.fill();
+  g.lineWidth = 3;
+  g.strokeStyle = 'rgba(255, 216, 138, 0.72)';
+  g.stroke();
   g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.shadowColor = 'rgba(255,216,138,0.9)'; g.shadowBlur = 12;
+  g.shadowColor = 'rgba(255,216,138,0.75)'; g.shadowBlur = 10;
   g.fillStyle = '#ffe9c2';
-  if (touch) {
-    g.font = '700 76px Rajdhani, sans-serif';
-    g.fillText(ARROW[sd], 64, 64);
-  } else {
-    g.font = '700 64px Rajdhani, sans-serif';
-    g.fillText(KEYCAP[sd], 64, 50);
-    g.font = '700 38px Rajdhani, sans-serif';
-    g.fillText(ARROW[sd], 64, 100);
-  }
+  g.font = '700 66px Rajdhani, sans-serif';
+  g.fillText(KEYCAP[sd], 64, 66);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   return tex;
 }
 function buildGlyphs(touch) {
   glyphTouch = touch;
-  for (const o of [...glyphGroup.children]) { o.material.map?.dispose(); o.material.dispose(); glyphGroup.remove(o); }
+  for (const o of [...glyphGroup.children]) {
+    o.geometry?.dispose();
+    o.material?.map?.dispose();
+    o.material?.dispose();
+    glyphGroup.remove(o);
+  }
   for (const sd of SCREEN_DIRS) {
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glyphTexture(sd, touch), transparent: true, depthWrite: false, depthTest: false }));
-    sp.scale.setScalar(0.62);
-    sp.renderOrder = 5;
-    glyphs[sd] = sp;
-    glyphGroup.add(sp);
+    const arrow = makeGlyphArrowMesh();
+    glyphGroup.add(arrow);
+    let key = null;
+    if (!touch) {
+      key = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: keycapTexture(sd), transparent: true, depthWrite: false, depthTest: false,
+      }));
+      key.scale.setScalar(0.31);
+      key.renderOrder = 5;
+      glyphGroup.add(key);
+    }
+    glyphs[sd] = { arrow, key };
   }
 }
+function glyphSurfaceY(wx, wz, baseZ) {
+  const gx = Math.round(wx + (level.w - 1) / 2);
+  const gy = Math.round(wz + (level.d - 1) / 2);
+  if (gx >= 0 && gx < level.w && gy >= 0 && gy < level.d) {
+    const ch = level.cells[baseZ]?.[gy]?.[gx];
+    if (ch && ch !== '.' && ch !== '^' && ch !== 'v') return baseZ + 1;
+  }
+  return baseZ;
+}
 let glyphFade = 0;
-function updateGlyphs(dt) {
-  const want = mode === 'game' && levelIndex < 2 && state.status === 'play' && movesThisLevel < 4 && !locked ? 1 : 0;
+function updateGlyphs(dt, t) {
+  const want = mode === 'game' && levelIndex < 2 && state.status === 'play' && movesThisLevel < 4 && !locked && !hintArrows.visible ? 1 : 0;
   glyphFade += (want - glyphFade) * Math.min(1, dt * 4);
   glyphGroup.visible = glyphFade > 0.02;
   if (!glyphGroup.visible) return;
   if (glyphTouch !== isTouch()) buildGlyphs(isTouch());
   const a = disp.sol, b = disp.cryo;
   const cx = (a.x + b.x) / 2, cy = Math.min(a.y, b.y), cz = (a.z + b.z) / 2;
+  const baseZ = Math.max(0, Math.round(cy));
+  const bob = drift ? 0.04 * Math.sin(t * 4) : 0;
   for (const sd of SCREEN_DIRS) {
-    const sp = glyphs[sd];
+    const { arrow, key } = glyphs[sd];
     const d = DIRS[worldDir(sd)];
-    // Sit just outside the pair along that axis.
+    // Sit just outside the pair along that axis; N/S gets extra keycap clearance to compensate for foreshortening.
     const half = d.x !== 0 ? Math.abs(a.x - b.x) / 2 : Math.abs(a.z - b.z) / 2;
-    const r = half + 1.05;
-    sp.position.set(cx + d.x * r, cy + 0.05, cz + d.y * r);
-    sp.material.opacity = 0.85 * glyphFade;
+    const ns = d.y !== 0;
+    const rArrow = half + (ns ? 0.68 : 0.76) + bob;
+    const rKey = half + (ns ? 1.46 : 1.30);
+    const ax = cx + d.x * rArrow, az = cz + d.y * rArrow;
+    const kx = cx + d.x * rKey, kz = cz + d.y * rKey;
+    const sy = Math.max(cy, glyphSurfaceY(ax, az, baseZ), key ? glyphSurfaceY(kx, kz, baseZ) : baseZ);
+    arrow.position.set(ax, sy + 0.04, az);
+    arrow.rotation.y = Math.atan2(-d.y, d.x);
+    arrow.material.opacity = 0.85 * glyphFade;
+    if (key) {
+      key.position.set(kx, sy + 0.06, kz);
+      key.material.opacity = 0.94 * glyphFade;
+    }
   }
 }
 
@@ -894,6 +1000,25 @@ onSettings((s) => {
 
 // ---------- loop ----------
 
+let activeCutscene = null;
+function setCutscene3D(cs) {
+  activeCutscene = cs;
+  if (cs) {
+    cs.resize(innerWidth, innerHeight);
+    renderPass.scene = cs.scene;
+    renderPass.camera = cs.camera;
+    bloom.strength = 1.05;
+    bloom.radius = 0.72;
+    bloom.threshold = 0.52;
+  } else {
+    renderPass.scene = scene;
+    renderPass.camera = camera;
+    bloom.strength = 0.75;
+    bloom.radius = 0.55;
+    bloom.threshold = 0.78;
+  }
+}
+
 const clock = new THREE.Clock();
 const tmpA = new THREE.Vector3(), tmpB = new THREE.Vector3(), tmpD = new THREE.Vector3(), viewDir = new THREE.Vector3();
 let frameNo = 0;
@@ -901,7 +1026,23 @@ function frame() {
   const dt = Math.min(clock.getDelta(), 0.05);
   now += dt * 1000;
   const t = now / 1000;
+  if (activeCutscene) {
+    activeCutscene.update(dt, t);
+    composer.render();
+    requestAnimationFrame(frame);
+    return;
+  }
   runAnims();
+  if (spiral) {
+    const f = Math.min(1, (now - spiral.start) / Math.max(1, spiral.dur));
+    const e = ease.inOut(f);
+    const r = spiral.r0 * (1 - e * 0.92);
+    const ang = spiral.ang0 + e * e * spiral.turns;
+    const y = spiral.y0 + ease.out(f) * 1.08;
+    disp.sol.set(spiral.mid.x + Math.cos(ang) * r, y, spiral.mid.z + Math.sin(ang) * r);
+    disp.cryo.set(spiral.mid.x - Math.cos(ang) * r, y, spiral.mid.z - Math.sin(ang) * r);
+    fx.sol.scale = fx.cryo.scale = 1 - e * 0.62;
+  }
   if (mode === 'menu') cam.angle += dt * (drift ? 0.07 : 0.02); // slow orbit behind the menus
   dtFrame = dt;
   if ((frameNo++ & 15) === 0) measureInsets(); // HUD/menu layout can change; cheap to re-measure
@@ -941,8 +1082,9 @@ function frame() {
   tether.update(tmpA, tmpB, showTether, t);
 
   updateHintArrows(t);
-  updateGlyphs(dt);
-  if (alloy.visible) alloy.rotation.y = t * 0.9;
+  updateGlyphs(dt, t);
+  if (alloy.visible) alloy.userData.update?.(t);
+  winFx.update(dt, t);
   bursts.update(dt);
   composer.render();
   requestAnimationFrame(frame);
@@ -951,7 +1093,7 @@ function frame() {
 // ---------- boot ----------
 
 ui.initUI({
-  startLevel, showMenuBackground, setMode, restart, skipDeck,
+  startLevel, showMenuBackground, setMode, setCutscene3D, restart, skipDeck,
   resetRun: () => { runTurns = 0; },
   levelInfo: () => ({ index: levelIndex, name: LEVELS[levelIndex].name, last: levelIndex === LEVELS.length - 1 }),
 });
@@ -971,4 +1113,33 @@ if (params.has('play')) {
   const moves = params.get('play').split(',').filter(Boolean);
   moves.forEach((m, i) => setTimeout(() => { busyUntil = 0; tryMoveWorld(m); }, 600 + i * 450));
   setTimeout(() => { document.body.dataset.status = state.status; }, 900 + moves.length * 450); // for headless checks
+}
+
+// Dev: ?winpreview=blast|overlay inspects the upgraded fusion blast or Deck N Online overlay.
+if (params.has('winpreview')) {
+  const modePrev = params.get('winpreview') || 'overlay';
+  const pts = [];
+  level.cells.forEach((layer, z) => layer.forEach((row, y) => [...row].forEach((ch, x) => {
+    if (ch === 'X') pts.push(worldPos({ x, y, z: z + 1 }));
+  })));
+  const mid = pts.length >= 2
+    ? new THREE.Vector3().addVectors(pts[0], pts[1]).multiplyScalar(0.5)
+    : new THREE.Vector3(0, 1, 0);
+  fx.sol.scale = fx.cryo.scale = 0;
+  tetherOn = false;
+  alloy.visible = true;
+  alloy.scale.setScalar(1);
+  if (modePrev === 'blast') {
+    alloy.position.set(mid.x, mid.y + 0.72, mid.z);
+    winFx.triggerBlast(mid, { frozen: true, at: 0.24 });
+  } else {
+    alloy.position.set(mid.x, mid.y + 0.35, mid.z);
+    const previewSolved = new Set(Array.from({ length: levelIndex + 1 }, (_, k) => k));
+    $('overlay').classList.add('win');
+    const shipEl = $('overlay-ship');
+    shipEl.hidden = false;
+    renderShipStatus(shipEl, { total: LEVELS.length, solved: previewSolved, justLit: levelIndex });
+    showOverlay(levelIndex === LEVELS.length - 1 ? 'THE BOND HOLDS' : `DECK ${levelIndex + 1} ONLINE`,
+      `THE SURGE THROWS THEM APART  ·  ${isTouch() ? 'TAP TO CONTINUE' : 'ENTER: NEXT DECK'}`, 'var(--gold)');
+  }
 }

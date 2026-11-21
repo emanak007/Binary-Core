@@ -5,6 +5,7 @@ import { LEVELS } from './levels.js';
 import { settings, setSetting, progress, resetProgress, markIntroSeen, hasProgress } from './store.js';
 import { sfx, initAudio, startMusic, unlockAudio } from './audio.js';
 import { playCutscene } from './cutscene.js';
+import { renderShipStatus } from './shipstatus.js';
 
 let api = null; // set by initUI (game.js)
 const root = document.getElementById('ui');
@@ -50,6 +51,7 @@ function focus(s, i, sound = true) {
   s.index = i;
   items.forEach((it, k) => it.classList.toggle('focus', k === i));
   items[i].scrollIntoView?.({ block: 'nearest' });
+  s.onFocus?.(items[i], i);
 }
 
 function activate(it) {
@@ -201,16 +203,23 @@ function buildMain() {
   });
 }
 
+let shipHandle = null;
 function buildChapters() {
   chapters = makeScreen('screen-chapters panel-screen', `
     <div class="menu-shade full"></div>
     <div class="back-chip" role="button">‹ BACK</div>
-    <header class="screen-head"><div class="eyebrow">SELECT A DECK</div><h2>CHAPTER SELECT</h2></header>
+    <header class="screen-head chapters-head">
+      <div><div class="eyebrow">SELECT A DECK</div><h2>CHAPTER SELECT</h2></div>
+      <div class="chapters-ship"></div>
+    </header>
     <div class="cards"></div>
     <div class="corner corner-right"><b>ARROWS</b> SELECT &nbsp;&nbsp; <b>ENTER</b> PLAY &nbsp;&nbsp; <b>ESC</b> BACK</div>`, {
     grid: true, dim: true,
     onBack: () => close(),
+    onFocus: (it) => { const d = it?.dataset.deck; shipHandle?.setHighlight(d != null ? Number(d) : -1); },
     onOpen: () => {
+      const solved = new Set(Object.keys(progress.best).map(Number));
+      shipHandle = renderShipStatus(chapters.el.querySelector('.chapters-ship'), { total: LEVELS.length, solved, compact: true });
       const wrap = chapters.el.querySelector('.cards');
       wrap.innerHTML = '';
       const prologue = h(`<div class="card prologue" data-nav>
@@ -221,7 +230,7 @@ function buildChapters() {
       LEVELS.forEach((lv, i) => {
         const locked = i + 1 > progress.unlocked;
         const best = progress.best[i];
-        const card = h(`<div class="card${locked ? ' disabled locked' : ''}${best != null ? ' solved' : ''}" data-nav>
+        const card = h(`<div class="card${locked ? ' disabled locked' : ''}${best != null ? ' solved' : ''}" data-deck="${i}" data-nav>
           <div class="card-num">${pad(i + 1)}</div><div class="card-kicker">DECK</div>
           <div class="card-name">${locked ? '— — —' : lv.name}</div>
           <div class="card-foot">${locked ? '<span class="lock"></span> LOCKED' : best != null ? `BEST <b>${best}</b> TURNS` : 'UNSOLVED'}</div></div>`);
@@ -286,7 +295,7 @@ function buildCredits() {
     <div class="menu-shade full"></div>
     <div class="credits-roll">
       <h2>BINARY CORE</h2>
-      <div class="cr"><span>DESIGN &amp; CODE</span><b>TBD</b></div>
+      <div class="cr"><span>DESIGN &amp; CODE</span><b>Emanak + Claude</b></div>
       <div class="cr"><span>ART</span><b>Gemini</b></div>
       <div class="cr"><span>AUDIO</span><b>ElevenLabs</b></div>
       <div class="cr"><span>BUILT WITH</span><b>Three.js</b></div>
@@ -329,6 +338,7 @@ function buildEnd() {
       <div class="eyebrow">ALL DECKS ONLINE</div>
       <h2 class="end-title">THE BOND HOLDS</h2>
       <p class="end-text">At the heart of the ship, Sol and Cryo fuse, and this time they stay as one.<br>The reactor roars back to life, and the Meridian wakes.</p>
+      <div class="end-ship"></div>
       <div class="stats"><div><b class="st-ch"></b><span>DECKS RELIT</span></div><div><b class="st-turns"></b><span>TOTAL TURNS</span></div></div>
       <nav class="menu-list center"></nav>
     </div>`, { onBack: () => showMainMenu() });
@@ -366,12 +376,14 @@ function newGame() {
 }
 
 function watchIntro() {
-  runCutscene('intro', () => { markIntroSeen(); });
+  api.setMode('cutscene');
+  runCutscene('intro', () => { markIntroSeen(); api.setMode('menu'); });
 }
 
 function runCutscene(id, onDone) {
   root.classList.add('hidden');
   cutscene = playCutscene(id, {
+    setCutscene3D: api.setCutscene3D,
     onDone: () => { cutscene = null; root.classList.remove('hidden'); sync(); onDone?.(); },
   });
   sync();
@@ -399,6 +411,10 @@ export function showEnd(stats) {
   api.setMode('menu');
   end.el.querySelector('.st-ch').textContent = stats.chambers;
   end.el.querySelector('.st-turns').textContent = stats.turns;
+  renderShipStatus(end.el.querySelector('.end-ship'), {
+    total: LEVELS.length,
+    solved: new Set(LEVELS.map((_, i) => i)),
+  });
   open(end);
 }
 

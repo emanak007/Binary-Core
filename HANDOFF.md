@@ -143,7 +143,7 @@ cutscene crossfades, hint worker reply (watchdog fallback exists), touch gesture
 - Deck 15's pit is the least obvious hazard; 1-deep pits (non-lethal) have no marker.
 - Hint count is tracked but not shown; mute (M) isn't persisted; no gamepad.
 - With `?shot`, winning the last level shows the old overlay instead of the End screen (for automated checks).
-- Credits are placeholders (`Design & Code: TBD`). Fill in the user's name/team.
+- Credits: `Design & Code: Emanak + Claude` (src3d/ui.js).
 - Vent particle counts aren't reduced on mobile.
 - Make 3D the default page and merge to `main` (see §3).
 

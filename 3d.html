@@ -24,6 +24,10 @@
     .hud { position: fixed; pointer-events: none; }
     #hud-left { top: calc(24px + var(--sat)); left: calc(36px + var(--sal)); }
     #chamber { font-size: 15px; font-weight: 600; letter-spacing: 3px; color: var(--dim); }
+    #deck-pips { display: flex; gap: 3px; margin: 4px 0 4px; }
+    #deck-pips i { display: block; width: 7px; height: 3px; border-radius: 1px; background: #262c3a; transition: background 0.3s, box-shadow 0.3s; }
+    #deck-pips i.lit { background: var(--sol); box-shadow: 0 0 6px rgba(255,169,77,0.55); }
+    #deck-pips i.cur { background: var(--gold); box-shadow: 0 0 8px rgba(255,216,138,0.85); }
     #level-name { font-size: 36px; font-weight: 700; letter-spacing: 2px; line-height: 1.05; }
     #hud-right { top: calc(24px + var(--sat)); right: calc(36px + var(--sar)); width: 340px; text-align: right; }
     .label { font-size: 14px; font-weight: 700; letter-spacing: 3px; }
@@ -46,6 +50,8 @@
     #overlay.show, #title.show { opacity: 1; }
     #title.show { pointer-events: auto; cursor: pointer; }
     #overlay-title { font-size: 64px; font-weight: 700; letter-spacing: 6px; }
+    #overlay-ship { margin: 14px auto 10px; width: min(560px, 90vw); }
+    #overlay-ship[hidden] { display: none; }
     #overlay-sub { font-size: 20px; font-weight: 600; letter-spacing: 3px; color: var(--dim); margin-top: 8px; }
     #title { background: radial-gradient(circle at 50% 45%, rgba(40, 22, 12, 0.55), rgba(5, 6, 10, 0.92)); }
     #title h1 { margin: 0; font-size: 110px; letter-spacing: 14px; font-weight: 700;
@@ -95,6 +101,7 @@
     /* ---------- small screens ---------- */
     @media (max-width: 760px) {
       #hud-left { left: 16px; } #level-name { font-size: 24px; } #chamber { font-size: 12px; letter-spacing: 2px; }
+      #deck-pips { gap: 2px; margin: 3px 0 2px; } #deck-pips i { width: 5px; }
       #hud-right { width: 46vw; right: 16px; }
       #heat-num { font-size: 18px; } .label { font-size: 11px; letter-spacing: 2px; }
       #mass { gap: 10px; margin-top: 8px; }
@@ -134,6 +141,7 @@
       #tactions [data-act="restart"] { right: calc(12px + var(--sar) + 66px); bottom: calc(10px + var(--sab)); }
       #tactions [data-act="undo"] { right: calc(12px + var(--sar)); bottom: calc(10px + var(--sab)); }
       #overlay-title { font-size: 30px; }
+      #overlay-ship { max-width: 320px; margin: 6px auto; }
     }
     /* ---------- hints / tips ---------- */
     #hint-btn { pointer-events: auto; margin-top: 10px; display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
@@ -171,6 +179,7 @@
 
   <div id="hud-left" class="hud">
     <div id="chamber">DECK 1 / 1</div>
+    <div id="deck-pips" aria-hidden="true"></div>
     <div id="level-name"></div>
     <button id="hint-btn" type="button" aria-label="Hint">💡 HINT <kbd>H</kbd></button>
   </div>
@@ -190,7 +199,7 @@
     <div id="controls">ARROWS / WASD move &nbsp;&nbsp; Q E rotate &nbsp;&nbsp; Z undo &nbsp;&nbsp; R restart &nbsp;&nbsp; H hint &nbsp;&nbsp; ESC pause</div>
   </div>
 
-  <div id="overlay"><div id="overlay-title"></div><div id="overlay-sub"></div></div>
+  <div id="overlay"><div id="overlay-title"></div><div id="overlay-ship" hidden></div><div id="overlay-sub"></div></div>
   <div id="touch">
     <button id="tpause" data-act="pause" aria-label="Pause">❚❚</button>
     <div id="dpad">

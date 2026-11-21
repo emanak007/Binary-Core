@@ -1,8 +1,9 @@
-// Data-driven cutscene player: letterbox, Ken Burns pan/zoom, crossfades, typewriter
-// subtitles, optional voice-over, Enter/click = next, hold Esc = skip.
+// Data-driven cutscene player: real-time 3D stage (with 2D fallback), letterbox,
+// fades, typewriter subtitles, optional voice-over & sound cues, Enter/click = next, hold Esc = skip.
 import { CUTSCENES } from './cutscenes.js';
-import { loadVoice, startVoice, stopVoice, duckMusic, sfx } from './audio.js';
+import { loadVoice, startVoice, stopVoice, duckMusic, sfx, playCutsceneCue, stopCutsceneCue } from './audio.js';
 import { settings } from './store.js';
+import { createCutscene3D } from './cutscene3d.js';
 
 const HOLD_MS = 900;
 const EXTS = ['png', 'jpg', 'jpeg', 'webp'];
@@ -13,16 +14,23 @@ const KEN_BURNS = [
   ['scale(1.14) translate(-1%, -0.6%)', 'scale(1.05) translate(0.8%, 0.6%)'],
 ];
 
-export function playCutscene(id, { onDone } = {}) {
+export function playCutscene(id, { onDone, setCutscene3D } = {}) {
   const shots = CUTSCENES[id] ?? [];
+  const params = new URLSearchParams(location.search);
+  const devShot = params.has('shotidx') ? Math.min(Math.max(Number(params.get('shotidx')) || 0, 0), Math.max(0, shots.length - 1)) : null;
+  const devTime = params.has('shottime') ? Math.max(0, Number(params.get('shottime')) || 0) : null;
+  const is3D = typeof setCutscene3D === 'function';
+
   const el = document.createElement('div');
-  el.className = 'cutscene';
+  el.className = `cutscene${is3D ? ' is-3d' : ''}`;
   el.innerHTML = `
     <div class="cs-stage"></div>
+    <div class="cs-shot-fade${is3D && devShot === null ? ' in' : ''}"></div>
+    <div class="cs-flash"></div>
     <div class="cs-vignette"></div>
+    <div class="cs-title"><div class="cs-title-main">BINARY <span>CORE</span></div><div class="cs-title-rule"></div></div>
     <div class="cs-bar cs-top"></div>
     <div class="cs-bar cs-bottom"><div class="cs-sub"></div></div>
-    <div class="cs-title"><div class="cs-title-main">BINARY <span>CORE</span></div><div class="cs-title-rule"></div></div>
     <div class="cs-progress"></div>
     <div class="cs-skip" title="Hold to skip">
       <svg viewBox="0 0 44 44"><circle class="bg" cx="22" cy="22" r="18"/><circle class="fg" cx="22" cy="22" r="18"/></svg>
@@ -33,25 +41,89 @@ export function playCutscene(id, { onDone } = {}) {
     <div class="cs-fade"></div>`;
   document.body.appendChild(el);
   const $ = (s) => el.querySelector(s);
-  const stage = $('.cs-stage'), sub = $('.cs-sub'), ring = $('.cs-skip .fg'), prog = $('.cs-progress');
+  const stage = $('.cs-stage'), shotFade = $('.cs-shot-fade'), flashEl = $('.cs-flash');
+  const sub = $('.cs-sub'), ring = $('.cs-skip .fg'), prog = $('.cs-progress');
   prog.innerHTML = shots.map(() => '<i></i>').join('');
   const CIRC = 2 * Math.PI * 18;
   ring.style.strokeDasharray = `${CIRC}`;
   ring.style.strokeDashoffset = `${CIRC}`;
 
-  const media = shots.map((s, i) => loadMedia(s, i)); // preload everything up front
-  let index = -1, done = false, typing = null, autoTimer = 0, holdStart = 0, holdRaf = 0, token = 0;
+  function triggerFlash() {
+    flashEl.style.transition = 'none';
+    flashEl.style.opacity = '0.88';
+    requestAnimationFrame(() => {
+      flashEl.style.transition = 'opacity 0.65s ease-out';
+      flashEl.style.opacity = '0';
+    });
+  }
+
+  let cs3d = null;
+  if (is3D) {
+    const mobile = matchMedia('(pointer: coarse)').matches || Math.min(innerWidth, innerHeight) < 600;
+    cs3d = createCutscene3D({ mobile, onFlash: triggerFlash });
+    setCutscene3D(cs3d);
+  }
+
+  const media = is3D ? null : shots.map((s, i) => loadMedia(s, i)); // preload 2D fallback only when needed
+  const voices = (devShot !== null || devTime !== null) ? null : shots.map((s) => loadVoice(s.voice));
+  let index = devShot !== null ? devShot - 1 : -1;
+  let done = false, typing = null, autoTimer = 0, cutTimer = 0, titleTimer = 0, holdStart = 0, holdRaf = 0, token = 0;
 
   duckMusic(true);
   requestAnimationFrame(() => el.classList.add('show'));
-  setTimeout(next, 450);
+  if (devShot !== null) next();
+  else setTimeout(next, 450);
 
   async function show(i) {
     const my = ++token;
     clearTimeout(autoTimer);
+    clearTimeout(cutTimer);
+    clearTimeout(titleTimer);
     stopVoice();
+    stopCutsceneCue();
     const shot = shots[i];
     [...prog.children].forEach((d, k) => d.classList.toggle('on', k <= i));
+
+    const buf = voices ? await voices[i] : null;
+    if (done || my !== token) return;
+    const estVoiceDur = buf?.duration ?? 0;
+    const waitSec = Math.max(shot.duration ?? 5, estVoiceDur ? estVoiceDur + (shot.title ? 2.2 : 0.9) : 0);
+
+    if (is3D) {
+      const startTime = devTime ?? 0;
+      const freeze = devTime !== null;
+      const applyShot = () => {
+        if (done || my !== token) return;
+        cs3d.setShot(shot.art, { startTime, freeze, duration: waitSec });
+        shotFade.classList.remove('in');
+        el.classList.toggle('title-card', !!shot.title);
+        el.classList.remove('title-in');
+        if (devTime !== null) {
+          sub.textContent = shot.text ?? '';
+          typing = null;
+          if (shot.title) el.classList.add('title-in');
+        } else {
+          const voiceDur = startVoice(buf);
+          typeText(shot.text ?? '', () => { if (shot.title) el.classList.add('title-in'); }, voiceDur);
+          playCutsceneCue(shot.cue, { quiet: !!buf, dur: waitSec });
+          if (shot.title) {
+            const revealMs = Math.round((voiceDur ? voiceDur * 0.52 : 2.6) * 1000);
+            titleTimer = setTimeout(() => { if (!done && my === token) el.classList.add('title-in'); }, revealMs);
+          }
+          if (devShot === null) {
+            autoTimer = setTimeout(next, waitSec * 1000);
+          }
+        }
+      };
+      if (devShot !== null || i === 0) {
+        applyShot();
+      } else {
+        shotFade.classList.add('in');
+        cutTimer = setTimeout(applyShot, 360);
+      }
+      return;
+    }
+
     const m = await media[i];
     if (done || my !== token) return;
 
@@ -71,20 +143,19 @@ export function playCutscene(id, { onDone } = {}) {
 
     el.classList.toggle('title-card', !!shot.title);
     el.classList.remove('title-in');
-    typeText(shot.text ?? '', () => { if (shot.title) el.classList.add('title-in'); });
-
-    const buf = await loadVoice(shot.voice);
-    if (done || my !== token) return;
     const voiceDur = startVoice(buf);
-    const wait = Math.max(shot.duration ?? 5, voiceDur ? voiceDur + 0.9 : 0) * 1000;
-    autoTimer = setTimeout(next, wait);
+    typeText(shot.text ?? '', () => { if (shot.title) el.classList.add('title-in'); }, voiceDur);
+
+    if (devShot !== null || devTime !== null) return; // keep dev inspection shots steady
+    autoTimer = setTimeout(next, waitSec * 1000);
   }
 
-  function typeText(text, onEnd) {
+  function typeText(text, onEnd, voiceDur = 0) {
     clearInterval(typing?.timer);
     sub.textContent = '';
     if (settings.reducedMotion || !text) { sub.textContent = text; typing = null; onEnd(); return; }
     let n = 0;
+    const stepMs = voiceDur > 0 ? Math.round(Math.min(72, Math.max(34, (voiceDur * 820) / text.length))) : 34;
     typing = {
       onEnd,
       finish() { clearInterval(this.timer); sub.textContent = text; typing = null; onEnd(); },
@@ -92,7 +163,7 @@ export function playCutscene(id, { onDone } = {}) {
         n += 1;
         sub.textContent = text.slice(0, n);
         if (n >= text.length) typing.finish();
-      }, 34),
+      }, stepMs),
     };
   }
 
@@ -115,12 +186,20 @@ export function playCutscene(id, { onDone } = {}) {
     if (done) return;
     done = true;
     clearTimeout(autoTimer);
+    clearTimeout(cutTimer);
+    clearTimeout(titleTimer);
     clearInterval(typing?.timer);
     cancelAnimationFrame(holdRaf);
     stopVoice();
+    stopCutsceneCue();
     duckMusic(false);
     el.classList.add('out');
-    setTimeout(() => { el.remove(); onDone?.(); }, 750);
+    setTimeout(() => {
+      setCutscene3D?.(null);
+      cs3d?.dispose();
+      el.remove();
+      onDone?.();
+    }, 750);
   }
 
   function holdBegin() {
