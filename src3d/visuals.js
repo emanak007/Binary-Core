@@ -222,7 +222,7 @@ export function buildLevel(level, m) {
     update(t, heatFrac, state) {
       for (const v of vents) v.userData.update(t);
       holes.mat.opacity = 0.55 + 0.35 * Math.sin(t * 3.2);
-      holes.hazeMat.opacity = 0.08 + 0.05 * Math.sin(t * 3.2);
+      holes.hazeMat.opacity = 0.025 + 0.012 * Math.sin(t * 3.2);
       for (const h of holes.list) {
         // A crate resting in the hole turns it into floor: hide its hazard marking.
         h.group.visible = !state?.blocks.some((b) => b.x === h.x && b.y === h.y && b.z === h.z - 1);

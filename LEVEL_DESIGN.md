@@ -23,7 +23,9 @@ The camera looks **north**, from the south-east (`YAW0 = 32°`). In `src3d/level
 - **The top standing layer is where gas drifts.** Put terraces you want gas to reach at that height, with `v` cells on them.
 - **Pits need a floor under them**, or a crate pushed in falls out of the world.
 - **Resting on the other element changes temperature:** Sol counts as hot, Cryo as cold. Sol on top of Cryo freezes, and on a grate or Crucible (which have no temperature) it stays frozen.
-- **A liquid can come to rest inside a grate cell.** If the floor below that cell is warm, a liquid Sol then turns solid while still inside the grate (see the report).
+- **A liquid can come to rest inside a grate cell.** It keeps its state there (grates have no temperature), so it can't turn solid inside the bars.
+- **Stacking boils or freezes within a single turn.** Cryo landing on Sol becomes gas and floats off in the same move, so the stacked position never shows up in a saved state. Check for the boil event, not the position.
+- **Single-file crossings need a way to line up.** Two elements moving together only change their relative position when something blocks one of them (a pillar, a wall, the map edge, a frozen Sol, a crate). Give every level at least one such blocker where alignment matters.
 
 ## Workflow
 Edit `src3d/levels.js`, then open `tools/solve3d.html` and check every level says it can be solved. Replay the path with
