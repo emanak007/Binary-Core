@@ -215,11 +215,18 @@ export function buildLevel(level, m) {
 
   const span = Math.max(level.w, level.d);
   group.add(makeStars(span * 1.4));
+  const holes = buildHoleRims(level, group);
 
   return {
     group, blocks,
-    update(t, heatFrac) {
+    update(t, heatFrac, state) {
       for (const v of vents) v.userData.update(t);
+      holes.mat.opacity = 0.55 + 0.35 * Math.sin(t * 3.2);
+      holes.hazeMat.opacity = 0.08 + 0.05 * Math.sin(t * 3.2);
+      for (const h of holes.list) {
+        // A crate resting in the hole turns it into floor: hide its hazard marking.
+        h.group.visible = !state?.blocks.some((b) => b.x === h.x && b.y === h.y && b.z === h.z - 1);
+      }
       m.h.emissiveIntensity = 0.38 + 0.16 * Math.sin(t * 2.2);
       const flick = 1 + 0.06 * Math.sin(t * 13) + 0.04 * Math.sin(t * 7.3);
       cLight.intensity = 3.2 * heatFrac * flick;
@@ -243,6 +250,53 @@ export function buildLevel(level, m) {
       }
     },
   };
+}
+
+// Glowing hazard edges where walkable floor meets a drop into the void, plus a faint red
+// haze over the opening, so lethal holes read clearly. (Drops to a lower floor are left plain:
+// terrace steps are already readable and rims there were visual noise.)
+const RIM_SOLID = new Set(['#', 'c', 'h', 'X', '=']);
+const RIM_AIR = new Set(['.', '^', 'v']);
+const rimGeoX = new THREE.BoxGeometry(0.94, 0.03, 0.06);
+const rimGeoZ = new THREE.BoxGeometry(0.06, 0.03, 0.94);
+const hazeGeo = new THREE.PlaneGeometry(0.96, 0.96);
+function buildHoleRims(level, group) {
+  const inside = (x, y) => x >= 0 && y >= 0 && x < level.w && y < level.d;
+  const cell = (x, y, z) => (z < 0 ? 'void' : level.cells[z][y][x]);
+  const isAir = (ch) => ch === 'void' || RIM_AIR.has(ch);
+  const lethalCol = (x, y, z) => { for (let zz = z; zz >= 0; zz--) if (!isAir(cell(x, y, zz))) return false; return true; };
+  const holes = new Map();
+  const tmp = new THREE.Vector3();
+  const mat = new THREE.MeshBasicMaterial({
+    color: 0xff4d5e, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const hazeMat = new THREE.MeshBasicMaterial({
+    color: 0xff2a3d, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false,
+    toneMapped: false, side: THREE.DoubleSide,
+  });
+  for (let z = 1; z < level.h; z++) for (let y = 0; y < level.d; y++) for (let x = 0; x < level.w; x++) {
+    if (!RIM_SOLID.has(cell(x, y, z - 1)) || !RIM_AIR.has(cell(x, y, z))) continue; // walkable floor here
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = x + dx, ny = y + dy;
+      if (!inside(nx, ny) || !isAir(cell(nx, ny, z)) || !lethalCol(nx, ny, z - 1)) continue;
+      const key = `${nx},${ny},${z}`;
+      if (!holes.has(key)) {
+        const g = new THREE.Group();
+        const haze = new THREE.Mesh(hazeGeo, hazeMat);
+        haze.rotation.x = -Math.PI / 2;
+        cellToWorld(level, nx, ny, z, tmp);
+        haze.position.set(tmp.x, z - 0.02, tmp.z);
+        g.add(haze);
+        group.add(g);
+        holes.set(key, { x: nx, y: ny, z, group: g });
+      }
+      cellToWorld(level, x, y, z, tmp);
+      const strip = new THREE.Mesh(dx !== 0 ? rimGeoZ : rimGeoX, mat);
+      strip.position.set(tmp.x + dx * 0.47, z + 0.0, tmp.z + dy * 0.47);
+      holes.get(key).group.add(strip);
+    }
+  }
+  return { list: [...holes.values()], mat, hazeMat };
 }
 
 // ---------- elements ----------

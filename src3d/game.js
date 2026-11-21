@@ -695,7 +695,7 @@ function frame() {
   updateCamera(t);
 
   const heatFrac = Math.max(0, Math.min(1, state.heat / level.heat));
-  world.update(t, heatFrac);
+  world.update(t, heatFrac, state);
   let maxZ = -Infinity;
   for (const k of ELEMENTS) {
     const e = state[k];
